@@ -84,7 +84,17 @@ if [[ $NO_UDEV -eq 0 ]]; then
   printf '%s\n' \
     'Removing the udev rule does not restore permissions on an already-created' \
     'sysfs attribute. The energy_uj grant stays until the device is recreated' \
-    'or the machine reboots.'
+    'or the machine reboots. To revoke it now, restore the kernel default of' \
+    'root-only on every RAPL zone (an older version of this rule also touched' \
+    'the per-core sub-zone, so do not filter by name here):' \
+    '' \
+    '  for z in /sys/class/powercap/intel-rapl:*; do' \
+    '    [ -e "$z/energy_uj" ] || continue' \
+    '    sudo chgrp root "$z/energy_uj" && sudo chmod 0400 "$z/energy_uj"' \
+    '  done' \
+    '' \
+    'Skip that if another rule or policy on this machine also grants access:' \
+    'it would be reverting their change, not ours.'
 fi
 
 if [[ -e "$STATE_DIR" ]]; then

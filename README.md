@@ -683,9 +683,20 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   also matched the `core` sub-zone, so installing the rule granted `wheel`
   read access to the per-core domain as well: the one the daemon deliberately
   never reads, and the higher-resolution one for PLATYPUS-class power side
-  channels. An `ATTR{name}=="package-*"` match removes it. If you installed an
-  earlier version, re-run `install.sh`; note that the old grant on an existing
-  sysfs attribute persists until the device is recreated or you reboot.
+  channels. An `ATTR{name}=="package-*"` match removes it.
+
+  **If you installed an earlier version, re-running `install.sh` is not
+  enough.** A new rule does not re-apply to a device that already exists, so
+  the sub-zone keeps the old grant until you reboot. Take it back now with:
+
+  ```bash
+  sudo chgrp root /sys/class/powercap/intel-rapl:0:0/energy_uj
+  sudo chmod 0400 /sys/class/powercap/intel-rapl:0:0/energy_uj
+  ```
+
+  Check the result with `stat -L -c '%a %U:%G %n'
+  /sys/class/powercap/*/energy_uj`: the `package-0` zone should read
+  `440 root:wheel` and the `core` zone `400 root:root`.
 - The claim that the rule "confers no privilege `wheel` did not already have"
   was too comfortable, and appeared in three places. It grants no write access
   and no new command, but it does remove the `sudo` authentication step, so
