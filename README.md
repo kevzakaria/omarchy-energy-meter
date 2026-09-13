@@ -149,11 +149,24 @@ answering (it will never show you a stale number styled as a live one).
 | Coverage | Any bucket that was not fully sampled is marked, so a day the machine was off for 18 hours never reads as a low-consumption day |
 | Settings | A gear in the top-right corner opens a config pane: price, currency, the estimate constants, and the sampling options, each with its units and what it does |
 
+<p align="center">
+  <img src="docs/settings.png" alt="The settings pane: price per kWh, a currency picker, and the estimate constants" width="380">
+</p>
+
+**Everything is configurable from the panel itself** — the gear in the panel's
+top-right corner opens this. Price per kWh, currency, the two
+estimate constants, and the sampling options, each with its units and a line
+saying what it does. No config file to find, no terminal needed.
+
+The settings are grouped by consequence rather than by type, because that is
+the distinction that matters: the first group **re-prices every stored day the
+moment you save it**, while the second only changes future sampling and says so.
+
 The main view carries numbers and nothing else — no disclaimer paragraph, no
 tariff line. The explanation of *why* the total is an estimate lives in the
-settings pane, next to the two constants that make it one, which is where
-someone reading it can act on it. What stays on the front is the live
-`81% measured` figure, because that is a measurement, not prose.
+settings pane, right next to the two constants that make it one, which is where
+someone reading it can actually act on it. What stays on the front is the live
+`76% measured` figure, because that is a measurement, not prose.
 
 The pane is also reachable without the mouse, so you can bind it:
 
