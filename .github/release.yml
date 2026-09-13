@@ -1,0 +1,43 @@
+# Categories for GitHub's generated release notes. Order here is the order in
+# the notes, so it doubles as a statement of what a reader should look at first.
+#
+# `Accuracy & correctness` sits near the top on purpose: in a tool whose whole
+# job is to report a number, a change that moves that number matters more to a
+# reader than a new feature does. Anything that alters a reported figure gets
+# the `correctness` label so it cannot be buried under Maintenance.
+#
+# Every PR lands one label. `Maintenance` catches `*`, so an unlabelled PR is
+# still listed rather than silently dropped.
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+    authors:
+      - "dependabot[bot]"
+      - "github-actions[bot]"
+  categories:
+    - title: Security
+      labels:
+        - security
+    - title: Accuracy & correctness
+      labels:
+        - correctness
+    - title: Hardware support
+      labels:
+        - hardware
+    - title: Features
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Maintenance
+      labels:
+        - maintenance
+        - "*"

@@ -282,8 +282,51 @@ git tag -a v1.2.0 -m 'v1.2.0'
 git push origin main --follow-tags
 ```
 
-Then open the marketplace verification issue with the new `main` SHA, and start
-a fresh `Unreleased` section on `release`.
+Then publish the release notes, open the marketplace verification issue with the
+new `main` SHA, and start a fresh `Unreleased` section on `release`.
+
+### Release notes
+
+Notes are a hand-written summary followed by GitHub's generated list. The
+generated half is categorised by
+[`.github/release.yml`](.github/release.yml), so **one label per PR** is what
+makes it readable; `Maintenance` catches `*`, so an unlabelled PR is listed
+rather than dropped. `Accuracy & correctness` is deliberately near the top:
+in a tool whose job is to report a number, a change that moves that number
+matters more to a reader than a new feature.
+
+```sh
+gh release create v1.2.0 \
+  --target main \
+  --title v1.2.0 \
+  --generate-notes \
+  --notes-start-tag v1.1.0 \
+  --notes-file - <<'EOF'
+## Highlights
+
+### Added
+
+- One sentence per user-visible change, with the PR link.
+
+### Fixed
+
+- What moved, and by how much. A number without a reference is not evidence:
+  "GPU integration bias -2.03% -> -0.39% against a dense 100 ms trace" is
+  useful, "improved GPU accuracy" is not.
+EOF
+```
+
+`--notes-file -` supplies the Highlights; `--generate-notes` appends
+`## What's Changed` and the full-changelog compare link beneath it. Check the
+result and edit on GitHub if a category came out wrong, which usually means a
+PR label was wrong.
+
+**Say plainly what the release does and does not do for a reader.** A GitHub
+Release updates nobody: installs track `main`, so the tag is a human-readable
+record, not a distribution channel. If a version needs an action — a
+`systemctl --user restart omarchy-energy` because `interval_s` handling changed,
+or `install.sh` re-run because the unit or udev rule changed — put that at the
+top of the Highlights, because nothing else will tell the user.
 
 **Never force-push or rebase `main`.** `omarchy-plugin-update` merges with
 `--ff-only`, so a rewritten history is not a fast-forward from what users have
