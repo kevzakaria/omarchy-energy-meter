@@ -212,9 +212,10 @@ own rule and a reason it is still read-only for `wheel`.
 
 There is no enforced commit convention in this ecosystem. Please still:
 
-- **open it against `dev`, not `main`.** `main` is what every installed copy
-  fast-forwards to on `omarchy plugin update`, so it only moves at release
-  time — see [Release](#release--marketplace)
+- **open it against `release`, not `main`.** GitHub will offer `main`; retarget
+  it. `main` is what every installed copy fast-forwards to on `omarchy plugin
+  update`, so it moves only when a version is cut — see
+  [Release](#release--marketplace)
 - one logical change per PR
 - an explanation of *why*, not only what
 - which CPU/GPU the change was tested on, and desktop vs laptop
@@ -256,34 +257,48 @@ changes nothing about what a user receives, and the marketplace's pinned SHA
 only governs what was *reviewed*, not what gets installed — the listing and the
 installation are two different trust boundaries.
 
-So the only real lever is what the default branch points at, and the policy
-follows from that:
+So the only real lever is what the default branch points at. Three tiers, each
+with one job:
 
-- **`dev` is where work lands.** Branch from it, PR into it.
-- **`main` only ever advances at release time.** Anything on `main` is live for
-  every user the moment they run `omarchy plugin update`.
+| Branch | Who writes to it | What it means |
+| --- | --- | --- |
+| `feature/*` | you | one change, rewrite freely |
+| `release` | merged PRs | staged for the next version; the Changelog's `Unreleased` section accumulates here |
+| `main` | a release merge only | **live**: every installed copy fast-forwards to it on `omarchy plugin update` |
 
-Releasing:
+PRs target `release`. Work piles up there until a version is worth cutting,
+which is what makes the Changelog honest: by release time `Unreleased` already
+lists everything that landed, written by whoever landed it, rather than being
+reconstructed from a month of commit messages.
+
+Cutting a version, on `release`:
 
 ```sh
-# on dev: bump manifest.json "version", add the Changelog entry, commit
+# rename the Changelog's `Unreleased` heading to the version, bump
+# manifest.json "version", commit
 git switch main
-git merge --ff-only dev        # keeps main linear; see the warning below
+git merge --ff-only release     # keeps main a linear prefix of release
 git tag -a v1.2.0 -m 'v1.2.0'
 git push origin main --follow-tags
 ```
 
-Then open the marketplace verification issue with the new `main` SHA.
+Then open the marketplace verification issue with the new `main` SHA, and start
+a fresh `Unreleased` section on `release`.
 
 **Never force-push or rebase `main`.** `omarchy-plugin-update` merges with
 `--ff-only`, so a rewritten history is not a fast-forward from what users have
 checked out: their update fails, the script resets them to `ORIG_HEAD`, and they
-are stuck on an old commit until they delete and re-add the plugin. Rewrite
-`dev` freely; treat `main` as append-only.
+sit on an old commit until they remove and re-add the plugin. Rewrite
+`feature/*` freely, keep `release` sane, treat `main` as append-only.
 
-`--ff-only` in the release merge is for our own hygiene, not the user's: it
-keeps `main` a linear prefix of `dev` so the SHA sent to the marketplace is
-exactly a commit that was reviewed on `dev`.
+`--ff-only` in the release merge is our own hygiene rather than the user's: it
+guarantees the SHA sent to the marketplace is exactly a commit that was
+reviewed on `release`, with no merge commit invented at publish time.
+
+**GitHub will offer `main` as the PR base**, because Omarchy requires `main` to
+be the repository default. That cannot be changed without breaking installs, so
+the guard is a PR template that says to retarget — check the base branch before
+merging anything.
 
 Bumping `version` in `manifest.json` is still worth doing — it is what the
 marketplace and `omarchy plugin list` display — but it publishes nothing on its

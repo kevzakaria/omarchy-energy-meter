@@ -545,13 +545,17 @@ Bug reports: please include `omaenergy status --json` and
 
 ## Changelog
 
-`main` is the release branch: development happens on `dev`, and `main` only
-moves when a version is cut. That is not a style preference — `omarchy plugin
-add` clones the default branch and `omarchy plugin update` fast-forwards to it,
-neither of which can be pointed at a tag, so a stable default branch is the
-only way to keep unreleased work out of your install. `manifest.json`'s
-`version` is a display string and publishes nothing on its own. See
-[CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+`main` is what you get. Pull requests land on `release` and accumulate there
+with their Changelog entries; `main` moves only when a version is cut, so
+`Unreleased` below is written as work lands rather than reconstructed
+afterwards.
+
+That split is forced rather than chosen. `omarchy plugin add` clones the
+repository's default branch and `omarchy plugin update` fast-forwards to it, and
+neither can be pointed at a tag — so a GitHub Release publishes nothing, and a
+stable default branch is the only way to keep unreleased work out of your
+install. `manifest.json`'s `version` is a display string with no effect of its
+own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
 ### Unreleased — since the first working build
 
