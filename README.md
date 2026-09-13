@@ -9,7 +9,7 @@ integrates and keeps a permanent daily rollup, so you can answer "what did this
 computer actually cost me last month?"
 
 <p align="center">
-  <img src="preview.png" alt="Energy Meter panel and bar widget" width="400">
+  <img src="preview.png" alt="The bar widget among its neighbours, the panel with the live draw and a 24h sparkline, and the settings pane" width="640">
 </p>
 
 It is built around one rule: **never present an estimate as a measurement.**
@@ -635,6 +635,17 @@ neither can be pointed at a tag, so a GitHub Release publishes nothing, and a
 stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+
+### 1.2.1
+
+**Changed**
+
+- `preview.png` is a landscape composite instead of a portrait screenshot of
+  one view: the bar widget sitting among its real neighbours, the panel with
+  the live draw and the 24 hour sparkline, and the settings pane. The
+  marketplace card is a fixed 175 px box with `object-fit: cover`, so a
+  near-square image was being cropped to whatever happened to be in the
+  middle. At 1400x840 the card crops nothing.
 
 ### 1.2.0
 
