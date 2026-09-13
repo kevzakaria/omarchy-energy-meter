@@ -636,7 +636,14 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
-### Unreleased
+### 1.2.0
+
+Four independent audits went over this repo before it was shown to anyone.
+None of them found a leak; all four found documentation that promised things
+the code refuses to do, and a root-installed rule wider than its own
+description. **Re-run `install.sh` to narrow the udev rule, then revoke the
+old grant by hand** (the commands are under Security below): a new rule does
+not re-apply to a device that already exists.
 
 **Fixed**
 
