@@ -321,6 +321,21 @@ EOF
 result and edit on GitHub if a category came out wrong, which usually means a
 PR label was wrong.
 
+Preview the generated half before tagging, so a bad label is caught then rather
+than in public:
+
+```sh
+gh api -X POST repos/kevzakaria/omarchy-energy-meter/releases/generate-notes \
+  -f tag_name=vNEXT -f target_commitish=release -q .body
+```
+
+For **v1.0.0** the generated half comes out nearly empty, because everything up
+to it landed as direct commits rather than PRs — there is no PR history to
+categorise. Drop `--notes-start-tag`, and let the Highlights carry the whole
+story; the README's Changelog already has it in the right shape to lift from.
+Releases after that get the categorised list for free, provided PRs are
+labelled.
+
 **Say plainly what the release does and does not do for a reader.** A GitHub
 Release updates nobody: installs track `main`, so the tag is a human-readable
 record, not a distribution channel. If a version needs an action — a
