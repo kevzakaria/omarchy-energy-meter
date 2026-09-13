@@ -119,6 +119,13 @@ that group did not already have. It is read-only, scoped to one attribute, and
 `uninstall.sh` removes it. If you would rather not, `--no-udev` leaves the GPU
 term working and reports the CPU term as unavailable rather than guessing it.
 
+`wheel` is the admin group on Arch, which Omarchy is built on. On a
+distribution that uses a different one, change the group in the rule before
+installing it and add yourself to whichever group you pick. `install.sh` checks
+afterwards whether the counter is actually readable by you, and if it is not it
+names which of the three causes applies: the rule is missing, you are not in
+the group, or the rule has not been applied yet.
+
 </details>
 
 Data starts accumulating at install time. RAPL counters are volatile and carry
@@ -576,6 +583,22 @@ neither can be pointed at a tag, so a GitHub Release publishes nothing, and a
 stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+
+### Unreleased
+
+**Fixed**
+
+- `install.sh` blamed the wrong thing when the RAPL counter came out
+  unreadable. It said the udev rule was missing even when the rule was already
+  installed and the real cause was group membership. It now distinguishes the
+  three causes, missing rule, user not in the group, and rule not yet applied,
+  and prints the one command that fixes the case you are actually in.
+
+**Documentation**
+
+- Says that `wheel` is Arch's admin group and what to change on a distribution
+  that uses another one. The rule always named `wheel`; nothing said why, or
+  what to do if that is wrong for your system.
 
 ### 1.0.0
 

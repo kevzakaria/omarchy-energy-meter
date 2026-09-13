@@ -173,7 +173,20 @@ fi
 if [[ $rapl_ok -eq 1 ]]; then
   printf 'RAPL package energy_uj is readable by this user.\n'
 else
-  printf 'RAPL package energy_uj is NOT readable by this user; CPU sampling will fail until the udev rule is installed and triggered.\n' >&2
+  printf 'RAPL package energy_uj is NOT readable by this user, so CPU sampling will fail.\n' >&2
+  # Three different causes, and telling the user the wrong one costs them an
+  # afternoon. The rule grants access to `wheel`, which is the admin group on
+  # Arch and Omarchy; on a distribution that uses another group, edit the rule.
+  if [[ ! -f $DEST_UDEV ]]; then
+    printf '  Cause: the udev rule is not installed. Re-run this script without --no-udev.\n' >&2
+  elif [[ " $(id -nG) " != *" wheel "* ]]; then
+    printf '  Cause: the rule is installed, but you are not in the "wheel" group it grants read access to.\n' >&2
+    printf '    sudo usermod -aG wheel %s\n' "$(id -un)" >&2
+    printf '  Group membership only applies to new sessions, so log out and back in afterwards.\n' >&2
+  else
+    printf '  Cause: the rule is installed and you are in "wheel", so it has probably not been applied yet.\n' >&2
+    printf '    sudo udevadm trigger --subsystem-match=powercap --action=add\n' >&2
+  fi
 fi
 
 systemctl --user enable --now omarchy-energy.service
