@@ -379,7 +379,7 @@ gear, and the same keys are settable from the terminal; both go through
 ```bash
 omaenergy config                            # list everything, with what needs a restart
 omaenergy config tariff=0.42                # your actual price per kWh
-omaenergy config tariff=1444.7 currency=IDR # any currency
+omaenergy config tariff=1444.7 currency=IDR # rupiah; PLN R-1/TR 1300 VA, not every golongan
 omaenergy config baseline_w=37.5            # after calibrating
 ```
 
@@ -396,6 +396,20 @@ omaenergy config baseline_w=37.5            # after calibrating
 | `raw_retention_days` | 30 | How long per-sample rows are kept for charts. The daily rollup is kept forever |
 | `sanity_max_cpu_w` | 1000 | Package draw above this is treated as a counter reset and dropped |
 | `gpu_source` | `auto` | `auto`, `off`, or an explicit hwmon path |
+
+`tariff` is the per-kWh price alone, the part of a bill that scales with what
+you use. Where a bill splits into a fixed monthly charge and a per-unit price,
+take the per-unit one: a German bill's `Arbeitspreis`, not the `Grundpreis`; a
+PLN bill's per-kWh figure for your own `golongan` and connection size, not a
+national number. The fixed part is deliberately out of scope, because it does
+not change when this machine runs, and what this meter answers is what running
+it costs you on top of standing still.
+
+So there is no correct default to ship. In Germany alone, September 2026 sits
+between roughly 24.9 ct/kWh on a new contract and 42.8 ct/kWh in
+`Grundversorgung`, before regional network fees move it again
+([strom-report](https://strom-report.com/strompreisentwicklung/)). Any figure
+this project picked for you would be someone else's bill.
 
 ### Why price changes are retroactive
 
@@ -618,6 +632,11 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
 **Documentation**
 
+- Says which number off a bill `tariff` actually is: the per-unit price, a
+  German bill's `Arbeitspreis` and not its `Grundpreis`, a PLN bill's figure
+  for your own golongan and not a national one. It said the default was a
+  placeholder without saying what to replace it with, and the fixed monthly
+  charge being out of scope was never stated at all.
 - Says that `wheel` is Arch's admin group and what to change on a distribution
   that uses another one. The rule always named `wheel`; nothing said why, or
   what to do if that is wrong for your system.
