@@ -46,9 +46,14 @@ Runtime state lives outside the plugin tree:
 2. **Privileged setup is a second, user-run step.** `install.sh` copies the
    CLI into `~/.local/bin/`, the unit into the user systemd directory, and
    (the only root action) the udev rule into `/etc/udev/rules.d/`, then
-   reloads powercap. The RAPL rule grants read-only `energy_uj` to `wheel`
-   because upstream keeps those files root-only after CVE-2020-8694
-   (PLATYPUS). It adds no privilege `wheel` did not already have.
+   reloads powercap. The RAPL rule grants read-only `energy_uj` to `wheel`,
+   on `package-*` zones only, because upstream keeps those files root-only
+   after CVE-2020-8694 (PLATYPUS). Describe it accurately in any change you
+   make: it adds no write access and no new command, but it does remove the
+   `sudo` authentication step, so any process running as the user can read
+   the package counter directly at an unbounded rate. The `ATTR{name}`
+   match keeps the per-core sub-zone out, since the daemon never reads it
+   and it is the higher-resolution side-channel domain.
 
 Removing the plugin with `omarchy plugin remove` does not undo the daemon,
 the unit, or the udev rule. That is `uninstall.sh`.

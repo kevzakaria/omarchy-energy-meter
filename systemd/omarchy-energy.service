@@ -21,13 +21,14 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=15
 
-# Sampling is two sysfs reads and one SQLite write every 10s. Keep it out of
-# the way of anything that matters.
+# Sampling is two RAPL sysfs reads plus ten GPU hwmon reads per interval,
+# then one SQLite write. Keep it out of the way of anything that matters.
 Nice=10
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 
-# It reads two sysfs attributes and writes one SQLite file. Nothing else.
+# It reads two RAPL sysfs attributes and ten GPU hwmon attributes per
+# interval, and writes one SQLite file. Nothing else.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -42,6 +43,9 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# SQLite sidecars and config rewrites must not be created world-readable if a
+# later chmod is missed. Explicit 0600 in the CLI and this umask agree.
+UMask=0077
 
 [Install]
 WantedBy=default.target

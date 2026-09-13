@@ -46,7 +46,7 @@ Because the GPU term is a power estimate rather than a counter, its energy is
 obtained by quadrature, which is only as good as the sample rate. Measured
 against a dense 100 ms reference trace on this machine, a trapezoid rule at a
 10 s spacing was off by -2.0% at idle and +2.6% under a light load, while 1 s
-spacing was off by -0.3%. Short bursts can alias much worse than that.
+        spacing was off by -0.39%. Short bursts can alias much worse than that.
 The daemon therefore sub-samples the GPU at `gpu_interval_s` (default 1 s) and
 integrates those, while still writing one database row per `interval_s`. The
 CPU term needs none of this: it is a counter, so a delta over the whole
@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sqlite3
 import sys
 import time
@@ -83,6 +84,68 @@ STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy-energy"
 DB_PATH = STATE_DIR / "energy.db"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+
+
+def _chmod_owned(path: Path, mode: int) -> None:
+    """Tighten one managed path, and only if we own it.
+
+    Existing installs were created under umask 0022 (directories 0755, files
+    0644). chmod follows a symlink and would change some other inode, so
+    symlinks are skipped. Callers name exact paths; this never walks a
+    directory.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+        return
+    if st.st_uid != os.getuid():
+        return
+    if stat.S_IMODE(st.st_mode) == mode:
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def ensure_private_dir(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _chmod_owned(path, 0o700)
+
+
+def db_sidecars() -> tuple[Path, Path]:
+    # SQLite names WAL sidecars by appending -wal/-shm, not by changing suffix.
+    return Path(str(DB_PATH) + "-wal"), Path(str(DB_PATH) + "-shm")
+
+
+def tighten_managed_paths() -> None:
+    """Owner-only modes on the state/config dirs and the files we put there."""
+    for directory in (STATE_DIR, CONFIG_DIR):
+        if directory.exists():
+            _chmod_owned(directory, 0o700)
+    wal, shm = db_sidecars()
+    for file in (CONFIG_PATH, DB_PATH, wal, shm):
+        if file.exists():
+            _chmod_owned(file, 0o600)
+
+
+def write_private_file(path: Path, text: str) -> None:
+    """Write `path` so it is never created world-readable.
+
+    Path.write_text opens with 0666 & ~umask (0644 under umask 0022). Opening
+    with mode 0600 covers the create case; fchmod covers an existing inode,
+    because O_CREAT does not re-apply the mode when the file already exists.
+    """
+    data = text.encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
 
 POWERCAP_ROOT = Path("/sys/class/powercap")
 HWMON_ROOT = Path("/sys/class/hwmon")
@@ -156,7 +219,7 @@ def defaults() -> dict:
         "cost_decimals": None,
         "interval_s": 10,
         # GPU power is integrated by quadrature, so this is the rate that
-        # actually determines GPU energy accuracy. 1 s measured -0.3% against a
+        # actually determines GPU energy accuracy. 1 s measured -0.39% against a
         # dense reference; 10 s measured -2.0%.
         "gpu_interval_s": 1.0,
         # Raw per-sample rows exist only to draw charts; the daily rollup is
@@ -230,9 +293,11 @@ def load_config() -> dict:
 
 def write_default_config() -> None:
     if CONFIG_PATH.exists():
+        _chmod_owned(CONFIG_DIR, 0o700)
+        _chmod_owned(CONFIG_PATH, 0o600)
         return
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(defaults(), indent=2) + "\n")
+    ensure_private_dir(CONFIG_DIR)
+    write_private_file(CONFIG_PATH, json.dumps(defaults(), indent=2) + "\n")
 
 
 # key -> (parser, retroactive?, help). `retroactive` means the change rewrites
@@ -267,7 +332,10 @@ SETTABLE = {
 
 
 def _num(value: object, low: float, high: float) -> float:
-    number = float(str(value).strip().replace(",", "."))
+    try:
+        number = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("must be a number") from None
     if not low <= number <= high:
         raise ValueError(f"must be between {low} and {high}")
     return number
@@ -287,7 +355,7 @@ def save_config(updates: dict) -> dict:
     so a config file from an older version keeps working and an unknown key
     someone added by hand is preserved rather than silently dropped.
     """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(CONFIG_DIR)
     try:
         on_disk = json.loads(CONFIG_PATH.read_text())
         if not isinstance(on_disk, dict):
@@ -296,11 +364,29 @@ def save_config(updates: dict) -> dict:
         on_disk = defaults()
     on_disk.update(updates)
     # Write-then-rename: a crash mid-write must not leave a truncated config
-    # that the daemon would then fall back to defaults on.
+    # that the daemon would then fall back to defaults on. The temp file is
+    # opened 0600 so the rename cannot leave a world-readable config.json
+    # behind the way Path.write_text (0666 & ~umask) would.
     tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(on_disk, indent=2, ensure_ascii=False) + "\n")
+    write_private_file(tmp, json.dumps(on_disk, indent=2, ensure_ascii=False) + "\n")
     os.replace(tmp, CONFIG_PATH)
+    _chmod_owned(CONFIG_PATH, 0o600)
     return on_disk
+
+
+def fmt_config_value(value: object) -> str:
+    """Human form that `omaenergy config key=<value>` will accept back.
+
+    Unset cost_decimals is stored as JSON null / Python None. Printing that
+    as `None` leaks the interpreter and is not a token the parser accepts;
+    `auto` is. bool must not fall through to str(True), because bool is a
+    subclass of int.
+    """
+    if value is None:
+        return "auto"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def cmd_config(args: argparse.Namespace, cfg: dict) -> int:
@@ -329,7 +415,7 @@ def cmd_config(args: argparse.Namespace, cfg: dict) -> int:
                               "restart_required": not retroactive_only}))
         else:
             for key, value in updates.items():
-                print(f"  {key} = {value}")
+                print(f"  {key} = {fmt_config_value(value)}")
             print("  applied to the whole history" if retroactive_only else
                   "  run: systemctl --user restart omarchy-energy")
         return 0
@@ -341,7 +427,7 @@ def cmd_config(args: argparse.Namespace, cfg: dict) -> int:
     for key in SETTABLE:
         _, retroactive, blurb = SETTABLE[key]
         mark = "" if retroactive else "  (needs a daemon restart)"
-        print(f"  {key:20} {str(cfg.get(key)):<12} {blurb}{mark}")
+        print(f"  {key:20} {fmt_config_value(cfg.get(key)):<12} {blurb}{mark}")
     print(f"\n  example: omaenergy config tariff=0.42 currency=EUR")
     return 0
 
@@ -547,7 +633,7 @@ def describe_sources(cfg: dict) -> dict:
 
 
 def connect(read_only: bool = False) -> sqlite3.Connection:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(STATE_DIR)
     if read_only and DB_PATH.exists():
         # A reporting command must never be able to create or migrate the
         # database the daemon owns, nor take a write lock while the daemon is
@@ -561,6 +647,11 @@ def connect(read_only: bool = False) -> sqlite3.Connection:
     db.execute("PRAGMA synchronous = NORMAL")
     db.executescript(SCHEMA)
     db.commit()
+    # SQLite creates the db and the -wal/-shm sidecars itself, under the
+    # process umask, so they land 0644 unless we tighten them after they exist.
+    _chmod_owned(DB_PATH, 0o600)
+    for side in db_sidecars():
+        _chmod_owned(side, 0o600)
     return db
 
 
@@ -616,6 +707,7 @@ def run_daemon(args: argparse.Namespace) -> int:
     meta_set(db, "gpu_source", str(gpu.path) if gpu.available else "")
     meta_set(db, "gpu_skipped", gpu.skipped_reason)
     db.commit()
+    tighten_managed_paths()
 
     rapl.delta_uj()  # prime the counter; the first delta is meaningless
     prev_gpu_w = gpu.watts()
@@ -627,7 +719,7 @@ def run_daemon(args: argparse.Namespace) -> int:
         # The CPU term is a counter and needs only two reads, but the GPU term
         # is a power estimate, so it is sampled `gpu_interval` apart and
         # trapezoid-integrated. A 10 s trapezoid measured -2.0% against a dense
-        # reference on this hardware; 1 s measured -0.3%.
+        # reference on this hardware; 1 s measured -0.39%.
         span_start = time.monotonic()
         deadline = span_start + interval
         sub_prev_t = span_start
@@ -1088,6 +1180,11 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--json", action="store_true", help="machine-readable output")
 
     args = parser.parse_args(argv)
+    # Existing artifacts were created 0755/0644 under umask 0022. Tighten
+    # them in place on every start, but only paths we manage and only when
+    # we own them.
+    os.umask(0o077)
+    tighten_managed_paths()
     cfg = load_config()
 
     if args.command == "daemon":

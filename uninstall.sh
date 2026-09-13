@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Remove the energy-meter backend installed by install.sh.
-# Does not delete the energy database unless --purge is given.
+# Does not delete the energy database or config unless --purge is given.
 set -euo pipefail
 
 usage() {
@@ -12,10 +12,11 @@ Remove the omarchy-energy-meter backend.
 Options:
   --no-udev   Leave the RAPL udev rule in place
   --purge     Also delete ~/.local/share/omarchy-energy (the energy history)
+              and ~/.config/omarchy-energy (config.json)
   -h, --help  Show this help
 
-By default the energy database is kept: it is history that cannot be
-regenerated. --purge is required to delete it.
+By default the energy database and the config directory are kept: the
+history cannot be regenerated. --purge is required to delete them.
 
 The bar widget is not removed by this script. After uninstalling the
 backend, run:
@@ -42,6 +43,7 @@ DEST_CLI=$HOME/.local/bin/omaenergy
 DEST_UNIT=$HOME/.config/systemd/user/omarchy-energy.service
 DEST_UDEV=/etc/udev/rules.d/99-omarchy-energy-rapl.rules
 STATE_DIR=$HOME/.local/share/omarchy-energy
+CONFIG_DIR=$HOME/.config/omarchy-energy
 
 printf 'Stopping and disabling omarchy-energy.service\n'
 systemctl --user disable --now omarchy-energy.service 2>/dev/null || true
@@ -78,6 +80,13 @@ else
   printf 'udev rule not present at %s\n' "$DEST_UDEV"
 fi
 
+if [[ $NO_UDEV -eq 0 ]]; then
+  printf '%s\n' \
+    'Removing the udev rule does not restore permissions on an already-created' \
+    'sysfs attribute. The energy_uj grant stays until the device is recreated' \
+    'or the machine reboots.'
+fi
+
 if [[ -e "$STATE_DIR" ]]; then
   size=$(du -sh "$STATE_DIR" | awk '{print $1}')
   printf 'Energy history: %s (%s)\n' "$STATE_DIR" "$size"
@@ -92,6 +101,21 @@ if [[ -e "$STATE_DIR" ]]; then
   fi
 else
   printf 'No energy history directory at %s\n' "$STATE_DIR"
+fi
+
+if [[ -e "$CONFIG_DIR" ]]; then
+  printf 'Config: %s\n' "$CONFIG_DIR"
+  if [[ $PURGE -eq 1 ]]; then
+    rm -rf "$CONFIG_DIR"
+    printf 'purged %s\n' "$CONFIG_DIR"
+  else
+    printf '%s\n' \
+      'Not deleting the config directory.' \
+      'Delete it later with:' \
+      "  rm -rf $CONFIG_DIR"
+  fi
+else
+  printf 'No config directory at %s\n' "$CONFIG_DIR"
 fi
 
 printf '%s\n' \

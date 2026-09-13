@@ -7,6 +7,22 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# Local secrets, logs, and ad-hoc dumps (do not ignore *.json: manifest.json
+# and the tracked config examples must stay in git)
+.env
+.env.local
+*.log
+*.dump
 
 # Editor
 *~

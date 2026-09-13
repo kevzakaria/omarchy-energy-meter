@@ -16,20 +16,27 @@ Usage: install.sh [--no-udev] [--help]
 Install the omarchy-energy-meter backend for the current user.
 
 Options:
-  --no-udev   Skip the RAPL udev rule (the only step that needs root)
+  --no-udev   Skip the RAPL udev rule (the only step that needs root).
+              This does not give a GPU-only meter: without a readable
+              RAPL package zone the daemon exits non-zero and the unit
+              retries because Restart=always.
   -h, --help  Show this help
 
 Installs:
   CLI     ~/.local/bin/omaenergy                         (copy, mode 755)
   unit    ~/.config/systemd/user/omarchy-energy.service
-  state   ~/.local/share/omarchy-energy/                 (directory)
-  config  ~/.config/omarchy-energy/                      (directory)
+  state   ~/.local/share/omarchy-energy/                 (directory, mode 0700)
+  config  ~/.config/omarchy-energy/                      (directory, mode 0700)
   udev    /etc/udev/rules.d/99-omarchy-energy-rapl.rules (root)
 
 The udev rule grants the wheel group read-only access to RAPL energy_uj
-so the daemon can sample CPU package energy. Upstream keeps energy_uj
-root-only because of CVE-2020-8694 (PLATYPUS). The rule adds no privilege
-wheel does not already hold.
+on package-* zones only so the daemon can sample CPU package energy.
+It does not match the per-core sub-zone (the higher-resolution PLATYPUS
+domain). Upstream keeps energy_uj root-only because of CVE-2020-8694
+It grants no write access and no new command; what it does remove is the
+sudo authentication step, so any process running as you can then read the
+package counter directly, at any rate it likes.
+Without a readable RAPL package zone the daemon refuses to start.
 
 Requires /usr/bin/python3 (the CLI shebang; stdlib only, no pip).
 EOF
@@ -78,8 +85,8 @@ printf '%s\n' \
   'This will install:' \
   "  CLI     $SRC_CLI  ->  $DEST_CLI  (copy, mode 755)" \
   "  unit    $SRC_UNIT  ->  $DEST_UNIT" \
-  "  state   $STATE_DIR  (create if missing)" \
-  "  config  $CONFIG_DIR  (create if missing)"
+  "  state   $STATE_DIR  (create if missing, mode 0700)" \
+  "  config  $CONFIG_DIR  (create if missing, mode 0700)"
 if [[ $NO_UDEV -eq 0 ]]; then
   printf '%s\n' "  udev    $SRC_UDEV  ->  $DEST_UDEV  (sudo)"
 else
@@ -88,15 +95,24 @@ fi
 printf '\n'
 
 # ReadWritePaths in the unit names these directories; systemd will refuse to
-# start the service if they do not exist at unit start time.
+# start the service if they do not exist at unit start time. Mode 0700 so
+# energy history and config.json are not group/world readable.
 mkdir -p "$HOME/.local/bin" \
-  "$HOME/.config/systemd/user" \
-  "$STATE_DIR" \
-  "$CONFIG_DIR"
+  "$HOME/.config/systemd/user"
+mkdir -p -m 0700 "$STATE_DIR" "$CONFIG_DIR"
+chmod 0700 "$STATE_DIR" "$CONFIG_DIR"
 
-cp -f "$SRC_CLI" "$DEST_CLI"
-chmod 755 "$DEST_CLI"
-printf 'installed CLI -> %s\n' "$DEST_CLI"
+cli_changed=0
+unit_changed=0
+
+if [[ -f "$DEST_CLI" ]] && cmp -s "$SRC_CLI" "$DEST_CLI"; then
+  printf 'CLI already installed and identical\n'
+else
+  cp -f "$SRC_CLI" "$DEST_CLI"
+  chmod 755 "$DEST_CLI"
+  cli_changed=1
+  printf 'installed CLI -> %s\n' "$DEST_CLI"
+fi
 
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
@@ -106,14 +122,23 @@ case ":$PATH:" in
     ;;
 esac
 
-cp -f "$SRC_UNIT" "$DEST_UNIT"
-printf 'installed unit -> %s\n' "$DEST_UNIT"
-systemctl --user daemon-reload
+if [[ -f "$DEST_UNIT" ]] && cmp -s "$SRC_UNIT" "$DEST_UNIT"; then
+  printf 'unit already installed and identical\n'
+else
+  cp -f "$SRC_UNIT" "$DEST_UNIT"
+  unit_changed=1
+  printf 'installed unit -> %s\n' "$DEST_UNIT"
+fi
+
+if [[ $unit_changed -eq 1 ]]; then
+  systemctl --user daemon-reload
+fi
 
 udev_later() {
   printf '%s\n' \
-    'The daemon cannot sample CPU energy until the RAPL udev rule is installed.' \
-    'Install it later with:' \
+    'The daemon refuses to start without a readable RAPL package zone.' \
+    '--no-udev only defers the root step; it does not give a GPU-only meter.' \
+    'Install the rule later with:' \
     "  sudo cp $SRC_UDEV $DEST_UDEV" \
     '  sudo udevadm control --reload-rules' \
     '  sudo udevadm trigger --subsystem-match=powercap --action=add'
@@ -128,8 +153,11 @@ else
     printf '%s\n' \
       'The RAPL energy_uj sysfs file is root-only upstream (CVE-2020-8694 /' \
       'PLATYPUS, a power side channel). This rule grants the wheel group' \
-      'READ-ONLY access to energy_uj so the user-session daemon can sample CPU' \
-      'package energy. It confers no privilege wheel does not already hold.'
+      'READ-ONLY access to energy_uj on package-* zones only so the' \
+      'user-session daemon can sample CPU package energy. It does not match' \
+      'the per-core sub-zone. No write access and no new command: what it' \
+      'removes is the sudo step, so anything running as you can then read the' \
+      'package counter directly, at any rate.'
     if [[ -t 0 && -t 1 ]] && command -v sudo >/dev/null 2>&1; then
       printf 'Installing %s via sudo...\n' "$DEST_UDEV"
       if sudo cp -f "$SRC_UDEV" "$DEST_UDEV" \
@@ -173,7 +201,7 @@ fi
 if [[ $rapl_ok -eq 1 ]]; then
   printf 'RAPL package energy_uj is readable by this user.\n'
 else
-  printf 'RAPL package energy_uj is NOT readable by this user, so CPU sampling will fail.\n' >&2
+  printf 'RAPL package energy_uj is NOT readable by this user, so the daemon will refuse to start.\n' >&2
   # Three different causes, and telling the user the wrong one costs them an
   # afternoon. The rule grants access to `wheel`, which is the admin group on
   # Arch and Omarchy; on a distribution that uses another group, edit the rule.
@@ -189,7 +217,22 @@ else
   fi
 fi
 
-systemctl --user enable --now omarchy-energy.service
+# enable --now is a no-op on an already-active unit and would leave a stale
+# process running the pre-copy CLI. Restart only when the CLI or unit bytes
+# actually changed; say so when they did not.
+systemctl --user enable omarchy-energy.service
+if [[ $cli_changed -eq 1 && $unit_changed -eq 1 ]]; then
+  printf 'CLI and unit changed; restarting omarchy-energy.service\n'
+  systemctl --user restart omarchy-energy.service
+elif [[ $cli_changed -eq 1 ]]; then
+  printf 'CLI changed; restarting omarchy-energy.service\n'
+  systemctl --user restart omarchy-energy.service
+elif [[ $unit_changed -eq 1 ]]; then
+  printf 'unit changed; restarting omarchy-energy.service\n'
+  systemctl --user restart omarchy-energy.service
+else
+  printf 'CLI and unit unchanged; not restarting omarchy-energy.service\n'
+fi
 svc=$(systemctl --user is-active omarchy-energy.service || true)
 printf 'service omarchy-energy.service: %s\n' "$svc"
 printf '%s\n' \

@@ -95,8 +95,10 @@ set it whenever you find your last bill, and every figure the meter has ever
 recorded is repriced.
 
 `install.sh` is idempotent, prints what it will do before doing it, and needs
-root for exactly one thing: a udev rule. Pass `--no-udev` to skip that and see
-what you get without it.
+root for exactly one thing: a udev rule. `--no-udev` only defers that root
+step; it does not give you a working GPU-only meter. Without a readable RAPL
+package zone the daemon refuses to start rather than recording rows with no
+CPU energy, and the unit has `Restart=always`, so it keeps retrying.
 
 <details>
 <summary><b>Why the root step exists, and what the rule does</b></summary>
@@ -106,18 +108,26 @@ Linux made that file root-only in response to
 [CVE-2020-8694](https://nvd.nist.gov/vuln/detail/CVE-2020-8694) (PLATYPUS: RAPL
 is a power side channel, and at high sample rates it can leak key material).
 
-The rule grants **read** access to group `wheel`, and nothing else:
+The rule grants **read** access to group `wheel` on RAPL **package** zones
+only, and nothing else:
 
 ```
-ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", \
-  RUN+="/usr/bin/chgrp wheel /sys%p/energy_uj", \
-  RUN+="/usr/bin/chmod 0440 /sys%p/energy_uj"
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", ATTR{name}=="package-*", RUN+="/usr/bin/chgrp wheel /sys%p/energy_uj", RUN+="/usr/bin/chmod 0440 /sys%p/energy_uj"
 ```
 
-`wheel` already holds `sudo` on an Omarchy system, so this confers no privilege
-that group did not already have. It is read-only, scoped to one attribute, and
-`uninstall.sh` removes it. If you would rather not, `--no-udev` leaves the GPU
-term working and reports the CPU term as unavailable rather than guessing it.
+What it changes is narrower than root, and wider than nothing. A member of
+`wheel` can already read this counter by authenticating to `sudo`; the rule
+removes that authentication step, so any process running as you reads the
+package counter directly, at whatever rate it likes. That rate is the part
+that matters for a side channel, which is why the scope below is worth
+reading rather than skipping. It grants no write access and no new command.
+The `ATTR{name}=="package-*"` match keeps it off the `core` sub-zone
+(`intel-rapl:0:0`), which the daemon never reads and which is the
+higher-resolution domain for PLATYPUS-class power side channels.
+`uninstall.sh` removes the rule. If you would rather not grant it, `--no-udev`
+only defers the root step: without a readable RAPL package zone the daemon
+refuses to start rather than guessing the CPU term, and the unit's
+`Restart=always` keeps retrying.
 
 `wheel` is the admin group on Arch, which Omarchy is built on. On a
 distribution that uses a different one, change the group in the rule before
@@ -139,7 +149,7 @@ something.
 
 **On the bar**: a bolt and the live figure. Right-click cycles what it shows:
 live watts → today's kWh → this month's kWh. It goes to the theme's urgent
-colour above a configurable threshold, and drops the number entirely if the
+colour at or above a configurable threshold, and drops the number entirely if the
 backend stops answering. It will never show you a stale reading styled as a
 live one.
 
@@ -151,14 +161,14 @@ live one.
 
 | | |
 |---|---|
-| Hero | Current draw, with a CPU / GPU / rest stacked bar whose segments sum exactly to the total, and the share of the reading that is hardware-measured |
+| Hero | Current draw, with a CPU / GPU / rest stacked bar whose segments sum to the total within display rounding, and the share of the reading that is hardware-measured |
 | Sparkline | Last 24 hours, hover for a crosshair readout |
 | Breakdown | Day / week / month / year, each row with energy, cost, average while tracked, and largest sample |
 | Coverage | Any bucket that was not fully sampled is marked, so a day the machine was off for 18 hours never reads as a low-consumption day |
 | Settings | A gear in the top-right corner opens a config pane: price, currency, the estimate constants, and the sampling options, each with its units and what it does |
 
 <p align="center">
-  <img src="docs/settings.png" alt="The settings pane: price per kWh, a currency picker, and the estimate constants" width="380">
+  <img src="docs/settings.png" alt="The settings pane: price per kWh, a currency picker, a symbol override, and decimal places" width="380">
 </p>
 
 **Everything is configurable from the panel itself**: the gear in the panel's
@@ -247,7 +257,7 @@ Both go into the row along with $\Delta t$. Nothing else does.
 
 Energy for any bucket, as it would appear at the wall socket:
 
-$$E_{\text{socket}} = \frac{E_{\text{cpu}} + E_{\text{gpu}} + P_{\text{base}} \cdot t_{\text{tracked}}}{\eta_{\text{PSU}}}$$
+$$E_{\text{socket}} = \frac{E_{\text{cpu}} + E_{\text{gpu}} + P_{\text{base}} \cdot t_{\text{tracked}} \times 10^{6}}{\eta_{\text{PSU}}} \quad [\mu\text{J}]$$
 
 $$\text{kWh} = \frac{E_{\text{socket}}\,[\mu\text{J}]}{3.6 \times 10^{12}}
 \qquad\text{since } 1\,\text{kWh} = 3.6\times10^{6}\,\text{J} = 3.6\times10^{12}\,\mu\text{J}$$
@@ -256,36 +266,37 @@ $$\text{cost} = \text{kWh} \times \text{tariff}$$
 
 Every watt and kWh the tool reports is **at-socket**: each measured component
 is divided by $\eta_{\text{PSU}}$ individually and the estimate is added in, so
-the parts always sum to the whole: `cpu_w + gpu_w + rest_w == watts` and
-`cpu_kwh + gpu_kwh + rest_kwh == kwh`, exactly. The raw sensor-side values are
-still available as `cpu_dc_w` and `gpu_dc_w` for calibration.
+the parts sum to the whole within display rounding (0.1 W, 0.0001 kWh). The
+total and each component are rounded independently, so `cpu_w + gpu_w + rest_w`
+can differ from `watts` by 0.1 W. The raw sensor-side values are still
+available as `cpu_dc_w` and `gpu_dc_w` for calibration.
 
 ### Worked example, with real output
 
 ```console
 $ omaenergy now
-  now        187.7 W    at socket, mean over the last 10s
-                        cpu 89.8 + gpu 61.9 + rest 36.0 (estimated)
-                        81% of this reading is hardware-measured
-  today      1.594 kWh  €0.48
-  month      1.594 kWh  €0.48
-  boot       1.594 kWh  (partial: not sampled for the whole boot)
+  now        164.8 W    at socket, mean over the last 10s
+                        cpu 71.2 + gpu 57.6 + rest 36.0 (estimated)
+                        78% of this reading is hardware-measured
+  today      1.944 kWh  €0.58
+  month      1.944 kWh  €0.58
+  boot       1.944 kWh  (partial: not sampled for the whole boot)
 ```
 
-Sensors read 80.0 W CPU and 55.1 W GPU on the DC side, with
+Sensors read 63.4 W CPU and 51.3 W GPU on the DC side, with
 `baseline_w = 32`, `psu_efficiency = 0.89`, `tariff = 0.30`:
 
 | Step | Value |
 |---|---|
-| $89.8 \approx 80.0 / 0.89$ | CPU at socket |
-| $61.9 = 55.1 / 0.89$ | GPU at socket |
-| $36.0 = 32 / 0.89$ | estimated remainder at socket |
-| $187.7 = 89.8 + 61.9 + 36.0$ | total: the parts add up |
-| $0.808 = (80.0 + 55.1)/(80.0 + 55.1 + 32)$ | measured share, shown as 81% |
+| $71.2 \approx 63.4 / 0.89$ | CPU at socket |
+| $57.6 \approx 51.3 / 0.89$ | GPU at socket |
+| $36.0 \approx 32 / 0.89$ | estimated remainder at socket |
+| $164.8$ | total, each term rounded to 0.1 W on its own (here $71.2 + 57.6 + 36.0 = 164.8$) |
+| $0.782 \approx (63.4 + 51.3)/(63.4 + 51.3 + 32)$ | measured share, shown as 78% |
 
-The first row is approximate only because the DC figures are displayed rounded
-to 0.1 W; the arithmetic itself runs on the unrounded values, which is why the
-total is exact.
+Each displayed watt is rounded independently to 0.1 W, so the printed parts
+need not equal the printed total. In this snapshot they do; a tenth of a watt
+of drift is still a rounding artifact, not a missing term.
 
 And the same day as a bucket:
 
@@ -293,16 +304,16 @@ And the same day as a bucket:
 $ omaenergy day
                    kWh   cost      avg      max
                                tracked  ~sample
-  2026-09-13     1.594  €0.48     145W     245W  ██████████████████████  (11h tracked)
-  total          1.594  €0.48
+  2026-09-13     1.944  €0.58     147W     245W  ██████████████████████  (13h tracked)
+  total          1.944  €0.58
 ```
 
 | Field | Meaning |
 |---|---|
-| `1.594 kWh` | $0.6065_{\text{cpu}} + 0.5918_{\text{gpu}} + 0.3960_{\text{rest}} = 1.5943$ |
-| `145 W` avg tracked | $1.594\,\text{kWh} \times 1000 / 11.014\,\text{h}$: the average **while sampling**, not across the calendar day |
+| `1.944 kWh` | $0.7531_{\text{cpu}} + 0.7152_{\text{gpu}} + 0.4754_{\text{rest}} = 1.9437$; displayed total is $1.9438$ (0.0001 kWh of independent rounding) |
+| `147 W` avg tracked | $1.9438\,\text{kWh} \times 1000 / 13.222\,\text{h}$: the average **while sampling**, not across the calendar day |
 | `245 W` max sample | the largest single-interval **average**. A spike shorter than `interval_s` is averaged away, which is why this is never called a peak |
-| `11h tracked` | coverage $= 11.014 / 12.97 = 0.85$: the day is 85% sampled, so this row is a partial total and marked as one |
+| `13h tracked` | coverage $= 13.222 / 15.179 \approx 0.871$: the day is 87% sampled, so this row is a partial total and marked as one |
 
 ---
 
@@ -355,7 +366,7 @@ omaenergy config tariff=0.42  # change the price per kWh, retroactively
 omaenergy currencies          # codes it knows, with symbol and precision
 ```
 
-Every subcommand takes `--json`. `status` is the one to paste into a bug report:
+Every subcommand except `daemon` takes `--json`. `status` is the one to paste into a bug report:
 it reports which sensors were discovered and chosen, which were found and
 deliberately not used, sample counts, and how many intervals were dropped.
 
@@ -374,7 +385,8 @@ deliberately not used, sample counts, and how many intervals were dropped.
 **Backend**: one source of truth, `~/.config/omarchy-energy/config.json`.
 You never need to hand-edit it. Every key below is editable from the panel's
 gear, and the same keys are settable from the terminal; both go through
-`omaenergy config`, which validates, clamps and writes atomically:
+`omaenergy config`, which validates and writes atomically. Out-of-range values
+are rejected rather than clamped (only the daemon clamps intervals at startup):
 
 ```bash
 omaenergy config                            # list everything, with what needs a restart
@@ -450,8 +462,8 @@ local day, cumulative, and **kept forever**: week, month and year are
 aggregated from it, so a year of history is 365 rows.
 
 Sampling costs two sysfs reads plus ten GPU reads and one SQLite write per
-interval. Measured over 9.5 hours of real operation: **2.0 seconds of CPU
-time** and about 11 MB RSS.
+interval. Measured over 2 hours 13 minutes of real operation: **3.075 seconds
+of CPU time** and about 11 MB RSS.
 
 ---
 
@@ -466,8 +478,9 @@ integrating it into a plausible-looking number.
 | AMD desktop CPU + discrete AMD GPU | **Verified.** The development machine (5950X + RX 7800 XT) |
 | Any CPU exposing RAPL `package-*` | Supported. Multiple sockets are summed |
 | AMD APU (integrated graphics) | CPU term only. The iGPU is already inside the RAPL package figure, and amdgpu's `power1_average` on an APU is documented to include the CPU, so counting it would nearly double the machine. The GPU term is dropped and the reason is reported in `status` |
+| Ryzen 7000/9000 desktop with RDNA2 iGPU | **Unverified.** `cpu_has_integrated_gpu()` treats a CPU as an APU only if `radeon` appears in the `/proc/cpuinfo` `model name`, which those parts do not carry, so the double-count guard does not fire and an iGPU could be added on top of a package figure that already includes it. Workaround: `gpu_source=off` |
 | Multiple AMD GPUs | The card with the highest `power1_cap` is chosen, never the lowest hwmon index: `hwmon10` sorts before `hwmon2`, so index order would happily measure a 15 W iGPU and ignore a 300 W card |
-| NVIDIA / Intel GPU | Not read. The GPU term is reported unavailable rather than silently zero |
+| NVIDIA / Intel GPU | Not read. The GPU term is recorded as 0 W rather than omitted; `omaenergy status` names the reason under `gpu_skipped` |
 | Intel `psys` / `dram` zones | **Detected, not used.** `psys` would be strictly better than package-plus-estimate and `dram` would shrink the estimate, but neither could be verified on real hardware here. `omaenergy status` lists them as available and unused |
 | No readable RAPL | The daemon refuses to start rather than record rows with no CPU energy |
 
@@ -482,7 +495,9 @@ for what evidence to include.
 Five things this tool deliberately does not get wrong. Each was verified on
 real hardware, and three of them came out of an audit that found them broken.
 
-**The RAPL `core` zone is ignored.** On Zen it is fed by
+### The RAPL `core` zone is ignored
+
+On Zen it is fed by
 `MSR_AMD_CORE_ENERGY_STATUS`, which is per-core, and powercap reads it on the
 package's lead CPU only, so the sysfs `core` file is *one physical core*.
 Measured: pinning a busy loop to cpu0 raised it 6.6 W, pinning to cpu8 did not
@@ -490,7 +505,9 @@ move it at all, and with 32 threads loaded it read 5.8 W against a package
 reading of 130.2 W. It is a subset of `package-0`, so adding them would double
 count that core.
 
-**Counter wraps are handled; resets are not guessed at.** `energy_uj` wraps at
+### Counter wraps are handled; resets are not guessed at
+
+`energy_uj` wraps at
 `max_energy_range_uj`, so deltas are taken modulo that range. A 10 s interval is
 about 46× shorter than one wrap at this CPU's power limit, so a double wrap is
 impossible. But a *reset* is arithmetically identical to a wrap and yields a
@@ -500,20 +517,26 @@ interval longer than `max(4 × interval_s, 60 s)` is discarded as a suspend or
 stall. Both are logged and both reduce `coverage` honestly instead of inventing
 energy.
 
-**GPU sampling is quadrature, not counting.** The GPU term is a power estimate,
+### GPU sampling is quadrature, not counting
+
+The GPU term is a power estimate,
 so its energy is only as good as the sample rate. Measured against a dense
 100 ms reference trace on this hardware: a 10 s trapezoid was off by −2.0% at
 idle and +2.6% under light load, while 1 s sub-sampling came in at **−0.39%**.
 Hence `gpu_interval_s` defaults to 1 s while database rows stay at 10 s. The CPU
 term needs none of this: it is a counter, so any spacing is exact.
 
-**Partial buckets are labelled.** `coverage` is the fraction of a bucket
+### Partial buckets are labelled
+
+`coverage` is the fraction of a bucket
 actually sampled, and averages are explicitly "while tracked". A day the
 machine was off for 18 hours reads `coverage: 0.25`, not "a cheap day". For a
 month that is 3% sampled, the tracked average and the calendar average differ
 by a factor of 30, so the two are never conflated.
 
-**Nothing is labelled as more than it is.** The live figure is a mean over the
+### Nothing is labelled as more than it is
+
+The live figure is a mean over the
 last interval, not an instant. `max_sample_w` is the largest interval average,
 not a peak. `uptime_kwh` says so when it does not span the whole boot. A
 backend with nothing to report returns no numbers at all, rather than a zero
@@ -556,13 +579,22 @@ estimate rather than your hardware.
 ## Uninstall
 
 ```bash
-omarchy plugin remove io.github.kevzakaria.energy-meter
 ~/.config/omarchy/plugins/io.github.kevzakaria.energy-meter/uninstall.sh
+omarchy plugin remove io.github.kevzakaria.energy-meter
 ```
 
-`uninstall.sh` reverses the service and the udev rule but **keeps your
-database**, because it is history that cannot be regenerated. It prints the
-path and the exact command; add `--purge` if you really want it gone.
+Run `uninstall.sh` first: `omarchy plugin remove` deletes the git checkout that
+contains the script, so the other order cannot work.
+
+`uninstall.sh` reverses the service, the udev rule, and the copied CLI at
+`~/.local/bin/omaenergy`, but **keeps your database and config**, because the
+database is history that cannot be regenerated. It prints both paths. Without
+`--purge` both survive; `--purge` removes the config directory as well as the
+database.
+
+Deleting the udev rule does not restore permissions on an already-created
+sysfs attribute; that grant persists until the device is recreated or the
+machine reboots.
 
 ---
 
@@ -593,9 +625,9 @@ Bug reports: please include `omaenergy status --json` and
 ## Changelog
 
 `main` is what you get. Pull requests land on `release` and accumulate there
-with their Changelog entries; `main` moves only when a version is cut, so
-`Unreleased` below is written as work lands rather than reconstructed
-afterwards.
+with their Changelog entries; `main` moves only when a version is cut.
+`Unreleased` lives on `release` and is written as work lands rather than
+reconstructed afterwards.
 
 That split is forced rather than chosen. `omarchy plugin add` clones the
 repository's default branch and `omarchy plugin update` fast-forwards to it, and
@@ -603,6 +635,82 @@ neither can be pointed at a tag, so a GitHub Release publishes nothing, and a
 stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+
+### Unreleased
+
+**Fixed**
+
+- Uninstall instructions ran `omarchy plugin remove` first, which deletes the
+  git checkout that contains `uninstall.sh`. The order is reversed, the copied
+  CLI is named, `--purge` is described as removing config as well as the
+  database, and deleting the udev rule is described as not restoring sysfs
+  permissions until the device is recreated or the machine reboots.
+- `--no-udev` was documented as leaving a GPU-only meter running. Without a
+  readable RAPL package zone the daemon refuses to start, and `Restart=always`
+  retries, so that flag only defers the root step.
+- The live split and the worked example claimed the parts sum exactly. Each
+  component is rounded independently (0.1 W, 0.0001 kWh), so the identity
+  holds only within display rounding.
+- The query-time formula added watts times seconds (joules) to microjoules.
+  The rest term is now multiplied by $10^{6}$ so every addend is µJ.
+- `omaenergy config` was described as clamping out-of-range values. It
+  rejects them and leaves the file untouched; only the daemon clamps
+  intervals at startup.
+- NVIDIA / Intel GPUs were documented as "unavailable". The GPU term is
+  recorded as 0 W; `omaenergy status` names the reason under `gpu_skipped`.
+- The sampler CPU-time claim (2.0 s over 9.5 h) could not be reproduced on
+  the live service, which now does ten GPU reads per interval. Replaced with
+  a measurement from this machine.
+- The GPU-sampling link pointed at bold paragraph text that generates no
+  heading anchor.
+- The bar's urgent colour is at or above `highWattThreshold`, not strictly
+  above it.
+- `--json` is not accepted by `daemon`.
+- The settings screenshot alt text promised the estimate constants; the crop
+  stops after Decimals.
+- Changelog copy pointed at an `Unreleased` section "below" as if it lived
+  on `main`; that section lives on `release`.
+
+**Changed**
+
+- Hardware support now names the unverified Ryzen 7000/9000 desktop + RDNA2
+  iGPU case: the APU guard keys off `radeon` in the CPU model string, which
+  those parts do not carry. `gpu_source=off` is the workaround.
+
+**Security**
+
+- **The udev rule now matches package zones only.** `KERNEL=="intel-rapl:*"`
+  also matched the `core` sub-zone, so installing the rule granted `wheel`
+  read access to the per-core domain as well: the one the daemon deliberately
+  never reads, and the higher-resolution one for PLATYPUS-class power side
+  channels. An `ATTR{name}=="package-*"` match removes it. If you installed an
+  earlier version, re-run `install.sh`; note that the old grant on an existing
+  sysfs attribute persists until the device is recreated or you reboot.
+- The claim that the rule "confers no privilege `wheel` did not already have"
+  was too comfortable, and appeared in three places. It grants no write access
+  and no new command, but it does remove the `sudo` authentication step, so
+  any process running as you can then read the package counter at an
+  unbounded rate. The rate is the part a side channel cares about.
+- History and settings are no longer world-readable. The state and config
+  directories are created `0700`, the database, its `-wal`/`-shm` sidecars and
+  `config.json` `0600`, and the unit runs with `UMask=0077`. Existing files are
+  tightened in place on start. A timestamped energy history reveals when the
+  machine is in use, which is not something to leave at `0644`.
+
+**Changed (backend)**
+
+- Re-running `install.sh` now restarts the sampler when the CLI or the unit
+  actually changed, and says so when nothing did. It used to copy a new CLI
+  and leave the old process running, because `enable --now` is a no-op on an
+  active unit, while the output implied the update had landed.
+- `uninstall.sh --purge` removes the config directory as well as the database,
+  and names both when you do not pass `--purge`. `config.json` used to survive
+  a purge silently.
+- `omaenergy config` no longer prints Python literals: an unset
+  `cost_decimals` reads `auto`, and every value it displays can be pasted
+  straight back. A bad number reads `must be a number` instead of
+  `could not convert string to float`.
+- `.gitignore` covers `.env*`, logs, and the other SQLite suffixes.
 
 ### 1.1.0
 

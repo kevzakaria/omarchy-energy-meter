@@ -1,6 +1,11 @@
-# Grant the wheel group read-only access to RAPL energy_uj.
+# Grant the wheel group read-only access to RAPL package-zone energy_uj.
 #
 # Upstream keeps this sysfs file root-only because of CVE-2020-8694 (PLATYPUS,
 # a power side channel that can leak cryptographic key material at high sample
-# rates). The rule confers no privilege the wheel group does not already hold.
-ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", RUN+="/usr/bin/chgrp wheel /sys%p/energy_uj", RUN+="/usr/bin/chmod 0440 /sys%p/energy_uj"
+# rates). The daemon only ever reads zones whose name starts with package-.
+# KERNEL=="intel-rapl:*" alone also matches sub-zones such as intel-rapl:0:0
+# (name=core), which is the higher-resolution domain for that class of attack
+# and which the daemon deliberately never reads. ATTR{name}=="package-*" keeps
+# the grant on the package zone and off the core sub-zone. The rule confers no
+# privilege the wheel group does not already hold.
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", ATTR{name}=="package-*", RUN+="/usr/bin/chgrp wheel /sys%p/energy_uj", RUN+="/usr/bin/chmod 0440 /sys%p/energy_uj"
