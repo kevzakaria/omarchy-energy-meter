@@ -604,7 +604,11 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
-### Unreleased
+### 1.1.0
+
+Saving in the settings pane used to be invisible: it worked, and looked
+exactly like it had not. **Run `omarchy restart shell` after updating**, or the
+already-mounted widget keeps running the old code.
 
 **Added**
 
