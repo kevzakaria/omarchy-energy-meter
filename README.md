@@ -55,9 +55,9 @@ omarchy plugin add https://github.com/kevzakaria/omarchy-energy-meter.git --enab
 omaenergy config tariff=0.42 currency=EUR
 ```
 
-Step 3 is also available from the panel, and it is retroactive: set it whenever
-you find your last bill and every figure the meter has ever recorded is
-repriced.
+Step 3 is also the gear in the panel's top-right corner, and it is retroactive:
+set it whenever you find your last bill, and every figure the meter has ever
+recorded is repriced.
 
 `install.sh` is idempotent, prints what it will do before doing it, and needs
 root for exactly one thing: a udev rule. Pass `--no-udev` to skip that and see
@@ -112,6 +112,19 @@ answering (it will never show you a stale number styled as a live one).
 | Sparkline | Last 24 hours, hover for a crosshair readout |
 | Breakdown | Day / week / month / year, each row with energy, cost, average while tracked, and largest sample |
 | Coverage | Any bucket that was not fully sampled is marked, so a day the machine was off for 18 hours never reads as a low-consumption day |
+| Settings | A gear in the top-right corner opens a config pane: price, currency, the estimate constants, and the sampling options, each with its units and what it does |
+
+The main view carries numbers and nothing else — no disclaimer paragraph, no
+tariff line. The explanation of *why* the total is an estimate lives in the
+settings pane, next to the two constants that make it one, which is where
+someone reading it can act on it. What stays on the front is the live
+`81% measured` figure, because that is a measurement, not prose.
+
+The pane is also reachable without the mouse, so you can bind it:
+
+```bash
+omarchy-shell io.github.kevzakaria.energy-meter settings
+```
 
 ---
 
@@ -291,8 +304,9 @@ deliberately not used, sample counts, and how many intervals were dropped.
 | `barLabelMode` | `watts` | `watts` / `todayKwh` / `monthKwh`. Right-click to cycle |
 
 **Backend** — one source of truth, `~/.config/omarchy-energy/config.json`.
-You should not need to hand-edit it; `omaenergy config` validates and writes it
-atomically, and the panel can set the price for you:
+You never need to hand-edit it. Every key below is editable from the panel's
+gear, and the same keys are settable from the terminal; both go through
+`omaenergy config`, which validates, clamps and writes atomically:
 
 ```bash
 omaenergy config                            # list everything, with what needs a restart
@@ -503,10 +517,16 @@ nothing — see [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace)
 
 **Added**
 
-- `omaenergy config` — a validated, atomic write path for every setting, so
-  the price per kWh no longer means hand-editing JSON. Also reachable from the
-  panel. `tariff`, `currency`, `baseline_w` and `psu_efficiency` apply to the
-  **whole history** the moment they are saved.
+- **A settings pane behind a gear** in the panel's top-right corner. Every
+  backend key is editable there, grouped by consequence: the ones that reprice
+  your whole history versus the ones that need a daemon restart, with the
+  restart command offered as a button when it is actually needed.
+- `omaenergy config` — the validated, atomic write path behind that pane, and
+  the same thing from a terminal, so the price per kWh no longer means
+  hand-editing JSON. `tariff`, `currency`, `baseline_w` and `psu_efficiency`
+  apply to the **whole history** the moment they are saved.
+- `omarchy-shell io.github.kevzakaria.energy-meter settings` opens that pane
+  over IPC, so it can be bound to a key.
 - Currency handling worth the name: a symbol and natural-precision table, so
   `EUR` renders `€0.42` and `IDR` renders `Rp 2,041` rather than `0.42E`.
   Overridable with `currency_symbol` and `cost_decimals`.
@@ -517,6 +537,15 @@ nothing — see [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace)
   database row interval.
 - `uptime_truncated`, and a `status` report of sensors found but deliberately
   unused (Intel `psys` / `dram`).
+
+**Changed**
+
+- The main panel view is numbers only. The accuracy paragraph and the tariff
+  line moved into the settings pane, beside `baseline_w` and `psu_efficiency` —
+  the two constants that are the reason the total is an estimate. A caveat sat
+  next to a dashboard is read once and then becomes furniture; sat next to the
+  fields that fix it, it is a call to action. The live `measured_share` figure
+  stays on the front, because it is a measurement rather than prose.
 
 **Fixed** — most of these came out of two independent audits run before any
 release, and they are listed because they explain why numbers moved

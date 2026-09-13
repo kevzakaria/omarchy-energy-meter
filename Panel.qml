@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -17,10 +16,32 @@ Panel {
 
   moduleName: "io.github.kevzakaria.energy-meter"
   ipcTarget: "io.github.kevzakaria.energy-meter"
+  // The base Panel registers open/close/show/hide/toggle on `ipcTarget`. We
+  // take that over to add `settings`, so the config pane is reachable without
+  // hunting for the gear -- bindable from Hyprland, and scriptable:
+  //   omarchy-shell io.github.kevzakaria.energy-meter settings
+  manageIpc: false
+
+  IpcHandler {
+    target: root.ipcTarget
+
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    // Opens the panel if needed, then shows the config pane, so one call
+    // lands on settings from any starting state.
+    function settings(): void {
+      if (!root.opened) root.open()
+      root.openConfig()
+    }
+  }
 
   readonly property string cli: (Quickshell.env("HOME") || "") + "/.local/bin/omaenergy"
   readonly property string iconBolt: "\uF0E7"
-
+  readonly property string iconCog: "\uF013"
+  readonly property string iconBack: "\uF060"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color accent: Color.accent
@@ -54,6 +75,26 @@ Panel {
   property real uptimeKwh: 0
   property real tariff: 0
   property string currency: "EUR"
+  property string currencySymbol: ""
+  property int costDecimals: 2
+  property bool hasCurrencyMeta: false
+
+  // Price and currency live only in the backend config file. Do not add
+  // them to manifest.json's barWidget.schema: that would write a second
+  // copy into shell.json that omaenergy would ignore. Read them from the
+  // `now` payload for display; write through `omaenergy config`.
+  property bool configOpen: false
+  property bool configSaving: false
+  property int configEpoch: 0
+  property int configFocusCount: 0
+  property var configValues: ({})
+  property var configDrafts: ({})
+  property var configErrors: ({})
+  property string configSaveError: ""
+  property bool restartRequired: false
+  readonly property bool configFieldFocused: configFocusCount > 0
+
+
   property real sampleAgeS: 0
   property real windowS: 0
   property real intervalS: 0
@@ -146,18 +187,54 @@ Panel {
     }
   }
 
-  function currencyPrefix(code) {
-    var c = String(code || "EUR").toUpperCase()
-    if (c === "EUR") return "\u20AC"
-    if (c === "USD") return "$"
-    if (c === "GBP") return "\u00A3"
-    return c + " "
+  function applyCurrencyMeta(data) {
+    if (!data) return
+    if (data.currency) currency = String(data.currency)
+    var symbol = data.currency_symbol
+    var decimals = data.cost_decimals
+    var haveSymbol = symbol !== undefined && symbol !== null && String(symbol) !== ""
+    var d = num(decimals, NaN)
+    var haveDecimals = decimals !== undefined && decimals !== null && isFinite(d)
+    if (haveSymbol && haveDecimals) {
+      currencySymbol = String(symbol)
+      costDecimals = Math.max(0, Math.min(6, Math.round(d)))
+      hasCurrencyMeta = true
+    }
   }
 
-  function formatCost(value, code) {
-    var n = num(value, 0)
-    return currencyPrefix(code || currency) + n.toFixed(2)
+  function groupThousands(intStr) {
+    var n = String(intStr || "0")
+    var out = ""
+    while (n.length > 3) {
+      out = "," + n.substring(n.length - 3) + out
+      n = n.substring(0, n.length - 3)
+    }
+    return n + out
   }
+
+  function formatMoneyNumber(value, decimals) {
+    var n = num(value, 0)
+    var d = Math.max(0, Math.min(6, Math.round(num(decimals, 2))))
+    var sign = n < 0 ? "-" : ""
+    var abs = Math.abs(n)
+    var parts = abs.toFixed(d).split(".")
+    var grouped = groupThousands(parts[0])
+    if (d > 0 && parts.length > 1)
+      return sign + grouped + "." + parts[1]
+    return sign + grouped
+  }
+
+  function formatCost(value) {
+    var n = num(value, 0)
+    if (!hasCurrencyMeta)
+      return formatMoneyNumber(n, 2) + " " + String(currency || "EUR")
+    var body = formatMoneyNumber(n, costDecimals)
+    var symbol = String(currencySymbol || "")
+    if (symbol.length === 1)
+      return symbol + body
+    return symbol + " " + body
+  }
+
 
   function formatKwh(value) {
     var n = num(value, 0)
@@ -275,11 +352,26 @@ Panel {
     return t
   }
 
-  readonly property string footerText: {
-    var caveat = "CPU from a true energy counter; GPU is an integrated power estimate. The rest of the machine is an estimate. Treat the total as +/-15-20% of a wall meter; trends are accurate."
-    var rate = "Tariff " + formatCost(tariff) + "/kWh \u2014 set in the energy backend config."
-    return caveat + " " + rate
-  }
+  readonly property string accuracyNote: "CPU is a hardware energy counter; GPU is an integrated estimate. Baseline and PSU efficiency stand in for the rest, so the total is ±15–20% of a wall meter. Trends are accurate."
+
+  readonly property var configMoneyFields: [
+    { key: "tariff", label: "Tariff", unit: "/kWh", blurb: "price per kWh", kind: "number" },
+    { key: "currency", label: "Currency", unit: "", blurb: "ISO currency code, e.g. EUR, USD, IDR", kind: "code" },
+    { key: "currency_symbol", label: "Symbol", unit: "", blurb: "override the symbol; empty means auto", kind: "text" },
+    { key: "cost_decimals", label: "Decimals", unit: "", blurb: "decimal places for money; auto by currency", kind: "autoNumber" }
+  ]
+  readonly property var configEstimateFields: [
+    { key: "baseline_w", label: "Baseline", unit: "W", blurb: "estimated draw of everything without a sensor", kind: "number" },
+    { key: "psu_efficiency", label: "PSU efficiency", unit: "", blurb: "AC->DC efficiency, 0.3-1.0", kind: "number" }
+  ]
+  readonly property var configRestartFields: [
+    { key: "interval_s", label: "Sample interval", unit: "s", blurb: "seconds per stored sample", kind: "number" },
+    { key: "gpu_interval_s", label: "GPU interval", unit: "s", blurb: "GPU sub-sample spacing; sets GPU accuracy", kind: "number" },
+    { key: "raw_retention_days", label: "Raw retention", unit: "days", blurb: "how long per-sample rows are kept", kind: "number" },
+    { key: "sanity_max_cpu_w", label: "CPU sanity cap", unit: "W", blurb: "package draw above this is a counter reset", kind: "number" },
+    { key: "gpu_source", label: "GPU source", unit: "", blurb: "auto | off | an explicit hwmon path", kind: "text" }
+  ]
+
 
   readonly property string heroMeta: {
     if (!healthy) return hasSample ? "LAST SAMPLE" : "NO DATA"
@@ -299,7 +391,7 @@ Panel {
       rest = "the configured " + formatWatts(nBase) + " baseline plus PSU loss (" + Math.round(nPsu * 100) + "% efficiency)"
     else if (isFinite(nBase) && nBase > 0)
       rest = "the configured " + formatWatts(nBase) + " baseline plus PSU loss"
-    return "The remainder of this reading is " + rest + ". Calibrate these in the energy backend config."
+    return "The remainder of this reading is " + rest + ". Open settings (gear) to calibrate."
   }
 
   // ----------------------------------------------------------- persist
@@ -330,6 +422,154 @@ Panel {
     granularity = next
     pollBuckets()
   }
+  function configLoadedText(key) {
+    if (!configValues || configValues[key] === undefined || configValues[key] === null)
+      return ""
+    return String(configValues[key])
+  }
+
+  function configFieldError(key) {
+    if (!configErrors || configErrors[key] === undefined || configErrors[key] === null)
+      return ""
+    return String(configErrors[key])
+  }
+
+  function setConfigDraft(key, value) {
+    if (!configDrafts) configDrafts = ({})
+    configDrafts[key] = value
+  }
+
+  function allConfigFields() {
+    return configMoneyFields.concat(configEstimateFields).concat(configRestartFields)
+  }
+
+  function applyConfigList(text) {
+    var data = parseJsonObject(text)
+    if (!data) return
+    configValues = data
+    var drafts = ({})
+    var fields = allConfigFields()
+    for (var i = 0; i < fields.length; i++) {
+      var k = fields[i].key
+      drafts[k] = configLoadedText(k)
+    }
+    configDrafts = drafts
+    configErrors = ({})
+    configEpoch += 1
+  }
+
+  function loadConfig() {
+    if (loadConfigProc.running) return
+    loadConfigProc.command = [root.cli, "config", "--json"]
+    loadConfigProc.running = true
+  }
+
+  function openConfig() {
+    configOpen = true
+    configSaveError = ""
+    restartRequired = false
+    configFocusCount = 0
+    loadConfig()
+    if (panelFlick) panelFlick.contentY = 0
+  }
+
+  function closeConfig() {
+    if (root.bar) root.bar.hideTooltip(gearHit)
+    configOpen = false
+    configFocusCount = 0
+    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function toggleConfig() {
+    if (configOpen) closeConfig()
+    else openConfig()
+  }
+
+  function valuesEqual(spec, draft, original) {
+    var a = String(draft || "").trim()
+    var emptyOrig = original === undefined || original === null || String(original) === ""
+    if (spec.kind === "number" || spec.kind === "autoNumber") {
+      if (a === "" && emptyOrig) return true
+      if (a === "" || emptyOrig) return a === "" && emptyOrig
+      var dn = Number(a.replace(",", "."))
+      var on = Number(original)
+      if (isFinite(dn) && isFinite(on)) return dn === on
+    }
+    return a === String(original === undefined || original === null ? "" : original).trim()
+  }
+
+  function commitConfig() {
+    if (configSaving || saveConfigProc.running) return
+    var errors = ({})
+    var pairs = []
+    var fields = allConfigFields()
+    var hasErr = false
+    for (var i = 0; i < fields.length; i++) {
+      var spec = fields[i]
+      var draft = String((configDrafts && configDrafts[spec.key]) || "").trim()
+      if ((spec.kind === "number" || spec.kind === "autoNumber") && draft !== "") {
+        if (!isFinite(Number(draft.replace(",", ".")))) {
+          errors[spec.key] = "must be a number"
+          hasErr = true
+          continue
+        }
+      }
+      var orig = configValues ? configValues[spec.key] : undefined
+      if (valuesEqual(spec, draft, orig)) continue
+      pairs.push(spec.key + "=" + draft)
+    }
+    configErrors = errors
+    configSaveError = ""
+    if (hasErr) return
+    if (pairs.length === 0) return
+    configSaving = true
+    restartRequired = false
+    // argv array, not a concatenated shell string: a currency code or
+    // hwmon path is untrusted keystrokes, and execvp-style argv cannot
+    // turn it into extra words or operators. bar.shellQuote is the
+    // fallback only if we had to go through bash -c.
+    var cmd = [root.cli, "config", "--json"]
+    for (var j = 0; j < pairs.length; j++) cmd.push(pairs[j])
+    saveConfigProc.command = cmd
+    saveConfigProc.running = true
+  }
+
+  function applyConfigSave(code) {
+    configSaving = false
+    if (code !== 0) {
+      var err = String(saveConfigErr.text || "").trim()
+      if (!err) err = String(saveConfigOut.text || "").trim()
+      if (!err) err = "could not save settings"
+      var line = err.split("\n")[err.split("\n").length - 1]
+      var m = line.match(/^omaenergy:\s*([a-z_]+):\s*(.*)$/)
+      if (m) {
+        var fieldErrs = ({})
+        fieldErrs[m[1]] = m[2]
+        configErrors = fieldErrs
+        configSaveError = ""
+      } else {
+        configSaveError = line.replace(/^omaenergy:\s*/, "")
+      }
+      return
+    }
+    configErrors = ({})
+    configSaveError = ""
+    var data = parseJsonObject(saveConfigOut.text)
+    restartRequired = !!(data && data.restart_required)
+    // Retroactive keys re-derive every stored day, so refresh now and
+    // the open breakdown together rather than waiting for the poll.
+    pollNow()
+    refreshPanelData()
+    loadConfig()
+  }
+
+  function restartSampler() {
+    if (root.bar && typeof root.bar.run === "function")
+      root.bar.run("systemctl --user restart omarchy-energy")
+    restartRequired = false
+  }
+
+
 
   // ------------------------------------------------------------- poll
 
@@ -386,7 +626,7 @@ Panel {
     // as reachable, and only the status decides how it renders.
     lastOkMs = Date.now()
     clockMs = lastOkMs
-    if (data.currency) currency = String(data.currency)
+    applyCurrencyMeta(data)
     tariff = num(data.tariff, tariff)
     if (data.baseline_w !== undefined) baselineW = num(data.baseline_w, baselineW)
     if (data.psu_efficiency !== undefined) psuEfficiency = num(data.psu_efficiency, psuEfficiency)
@@ -447,7 +687,8 @@ Panel {
     var data = parseJsonObject(text)
     if (!data || data.status !== "ok" || !Array.isArray(data.buckets))
       return
-    if (data.currency) currency = String(data.currency)
+    applyCurrencyMeta(data)
+    if (data.tariff !== undefined) tariff = num(data.tariff, tariff)
     var rows = []
     for (var i = 0; i < data.buckets.length; i++) {
       var b = data.buckets[i] || {}
@@ -477,6 +718,8 @@ Panel {
       refreshPanelData()
       if (panelFlick) panelFlick.contentY = 0
       Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    } else if (configOpen) {
+      closeConfig()
     }
   }
 
@@ -558,6 +801,28 @@ Panel {
       }
     }
   }
+  Process {
+    id: loadConfigProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyConfigList(text)
+    }
+  }
+
+  Process {
+    id: saveConfigProc
+    stdout: StdioCollector {
+      id: saveConfigOut
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: saveConfigErr
+      waitForEnd: true
+    }
+    onExited: function(code) { root.applyConfigSave(code) }
+  }
+
+
 
   WidgetButton {
     id: button
@@ -607,14 +872,22 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
+    contentWidth: panel.fittedContentWidth(Style.space(420))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(720))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-
+      blocked: root.configFieldFocused
       onMoveRequested: function(dx, dy) {
+        if (root.configOpen) {
+          if (dy !== 0 && panelFlick)
+            panelFlick.contentY = Util.clamp(
+              panelFlick.contentY + dy * Style.space(56),
+              0,
+              Math.max(0, panelFlick.contentHeight - panelFlick.height))
+          return
+        }
         if (dx !== 0) root.cycleGranularity(dx)
         if (dy !== 0 && panelFlick)
           panelFlick.contentY = Util.clamp(
@@ -622,10 +895,16 @@ Panel {
             0,
             Math.max(0, panelFlick.contentHeight - panelFlick.height))
       }
-      onActivateRequested: root.refreshPanelData()
-      onCloseRequested: root.close()
+      onActivateRequested: {
+        if (!root.configOpen) root.refreshPanelData()
+      }
+      onCloseRequested: {
+        if (root.configOpen) root.closeConfig()
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
+        if (root.configOpen) return
         if (t === "r" || t === "R") {
           root.pollNow()
           root.refreshPanelData()
@@ -641,7 +920,6 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
           id: column
@@ -649,185 +927,460 @@ Panel {
           spacing: Style.space(12)
 
           // ---------- Hero ----------
-          Row {
+          Item {
             width: parent.width
-            spacing: Style.space(12)
+            height: Math.max(heroRow.height, gearHit.height)
 
-            Text {
-              textFormat: Text.PlainText
-              text: root.iconBolt
-              color: root.healthy ? root.foreground : root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.display
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Column {
-              spacing: Style.space(2)
-              anchors.verticalCenter: parent.verticalCenter
+            Row {
+              id: heroRow
+              anchors.left: parent.left
+              anchors.right: gearHit.left
+              anchors.rightMargin: Style.space(8)
+              spacing: Style.space(12)
 
               Text {
                 textFormat: Text.PlainText
-                text: root.hasSample ? root.formatWatts(root.watts) : "\u2014"
-                color: root.highDraw ? root.urgent : (root.healthy ? root.foreground : root.dim)
+                text: root.iconBolt
+                color: root.healthy ? root.foreground : root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
-                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Column {
+                spacing: Style.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.hasSample ? root.formatWatts(root.watts) : "\u2014"
+                  color: root.highDraw ? root.urgent : (root.healthy ? root.foreground : root.dim)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.display
+                  font.bold: true
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.heroMeta
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                }
+
+                Item {
+                  visible: root.hasSample && root.hasMeasuredShare
+                  width: measuredShareText.implicitWidth
+                  height: measuredShareText.implicitHeight
+
+                  Text {
+                    id: measuredShareText
+                    textFormat: Text.PlainText
+                    text: root.measuredShareText
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  MouseArea {
+                    id: measuredHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                  }
+
+                  PanelToolTip {
+                    visible: measuredHover.containsMouse && root.measuredShareTip !== ""
+                    text: root.measuredShareTip
+                    fontFamily: root.fontFamily
+                  }
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  visible: root.hasSample && root.hasUptime
+                  text: "Uptime " + root.formatKwh(root.uptimeKwh) + (root.uptimeTruncated ? " (partial)" : "")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+
+            Item {
+              id: gearHit
+              anchors.right: parent.right
+              anchors.top: parent.top
+              width: Style.space(28)
+              height: Style.space(28)
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.centerIn: parent
+                text: root.iconCog
+                color: root.foreground
+                opacity: gearHover.containsMouse || root.configOpen ? 0.95 : 0.38
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                id: gearHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onEntered: if (root.bar) root.bar.showTooltip(gearHit, "Settings")
+                onExited: if (root.bar) root.bar.hideTooltip(gearHit)
+                onClicked: root.toggleConfig()
+              }
+            }
+          }
+
+          Column {
+            visible: !root.configOpen
+            width: parent.width
+            spacing: Style.space(12)
+
+            SplitMeter {
+              width: parent.width
+              visible: root.hasSample
+              cpuW: root.cpuW
+              gpuW: root.gpuW
+              restW: root.restW
+              watts: root.watts
+              opacity: root.healthy ? 1 : 0.45
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(14)
+              visible: root.hasSample
+
+              LegendDot { swatch: root.cpuColor; text: "CPU " + root.formatWatts(root.cpuW) }
+              LegendDot { swatch: root.gpuColor; text: "GPU " + root.formatWatts(root.gpuW) }
+              LegendDot { swatch: root.restColor; text: "rest " + root.formatWatts(root.restW) }
+            }
+
+            PanelSeparator { foreground: root.foreground }
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "LAST 24H"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Sparkline {
+              width: parent.width
+              points: root.chartPoints
+              lineColor: root.foreground
+              crosshairColor: root.accent
+              dim: root.dim
+              fontFamily: root.fontFamily
+            }
+
+            PanelSeparator { foreground: root.foreground }
+
+            ButtonGroup {
+              width: parent.width
+              options: root.periodOptions
+              value: root.granularity
+              focusable: false
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onChanged: function(v) {
+                if (v === root.granularity) return
+                root.granularity = v
+                root.pollBuckets()
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.md
+              visible: root.visibleBuckets.length > 0
+
+              Repeater {
+                model: root.visibleBuckets
+
+                Bucket {
+                  required property var modelData
+                  width: column.width
+                  label: root.formatBucketLabel(root.granularity, modelData.label)
+                  ratio: root.bucketPeak > 0 ? (Number(modelData.kwh) / root.bucketPeak) : 0
+                  kwhText: root.formatKwh(modelData.kwh)
+                  costText: root.formatCost(modelData.cost)
+                  partial: Number(modelData.coverage) < 0.98
+                  tooltipText: root.bucketTooltip(modelData)
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  dim: root.dim
+                  track: root.track
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.visibleBuckets.length === 0
+              width: parent.width
+              text: "No data for this period yet"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
+          }
+
+          Column {
+            visible: root.configOpen
+            width: parent.width
+            spacing: Style.space(10)
+
+            Row {
+              spacing: Style.space(8)
+
+              Item {
+                width: Style.space(22)
+                height: Style.space(22)
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  textFormat: Text.PlainText
+                  anchors.centerIn: parent
+                  text: root.iconBack
+                  color: root.foreground
+                  opacity: backHover.containsMouse ? 0.95 : 0.5
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                MouseArea {
+                  id: backHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.closeConfig()
+                }
               }
 
               Text {
                 textFormat: Text.PlainText
-                text: root.heroMeta
+                text: "SETTINGS"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 font.letterSpacing: 1.2
-              }
-
-              Item {
-                visible: root.hasSample && root.hasMeasuredShare
-                width: measuredShareText.implicitWidth
-                height: measuredShareText.implicitHeight
-
-                Text {
-                  id: measuredShareText
-                  textFormat: Text.PlainText
-                  text: root.measuredShareText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                MouseArea {
-                  id: measuredHover
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  acceptedButtons: Qt.NoButton
-                }
-
-                PanelToolTip {
-                  visible: measuredHover.containsMouse && root.measuredShareTip !== ""
-                  text: root.measuredShareTip
-                  fontFamily: root.fontFamily
-                }
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                visible: root.hasSample && root.hasUptime
-                text: "Uptime " + root.formatKwh(root.uptimeKwh) + (root.uptimeTruncated ? " (partial)" : "")
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
+                anchors.verticalCenter: parent.verticalCenter
               }
             }
-          }
 
-          SplitMeter {
-            width: parent.width
-            visible: root.hasSample
-            cpuW: root.cpuW
-            gpuW: root.gpuW
-            restW: root.restW
-            watts: root.watts
-            opacity: root.healthy ? 1 : 0.45
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(14)
-            visible: root.hasSample
-
-            LegendDot { swatch: root.cpuColor; text: "CPU " + root.formatWatts(root.cpuW) }
-            LegendDot { swatch: root.gpuColor; text: "GPU " + root.formatWatts(root.gpuW) }
-            LegendDot { swatch: root.restColor; text: "rest " + root.formatWatts(root.restW) }
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          PanelSectionHeader {
-            width: parent.width
-            text: "LAST 24H"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Sparkline {
-            width: parent.width
-            points: root.chartPoints
-            lineColor: root.foreground
-            crosshairColor: root.accent
-            dim: root.dim
-            fontFamily: root.fontFamily
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          ButtonGroup {
-            width: parent.width
-            options: root.periodOptions
-            value: root.granularity
-            focusable: false
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
-            onChanged: function(v) {
-              if (v === root.granularity) return
-              root.granularity = v
-              root.pollBuckets()
+            PanelSectionHeader {
+              width: parent.width
+              text: "APPLIES TO ALL HISTORY"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
             }
-          }
 
-          Column {
-            width: parent.width
-            spacing: Style.spacing.md
-            visible: root.visibleBuckets.length > 0
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: "Saving these re-prices every stored day immediately."
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
             Repeater {
-              model: root.visibleBuckets
-
-              Bucket {
+              model: root.configMoneyFields
+              ConfigRow {
                 required property var modelData
                 width: column.width
-                label: root.formatBucketLabel(root.granularity, modelData.label)
-                ratio: root.bucketPeak > 0 ? (Number(modelData.kwh) / root.bucketPeak) : 0
-                kwhText: root.formatKwh(modelData.kwh)
-                costText: root.formatCost(modelData.cost)
-                partial: Number(modelData.coverage) < 0.98
-                tooltipText: root.bucketTooltip(modelData)
-                foreground: root.foreground
-                dim: root.dim
-                track: root.track
-                fontFamily: root.fontFamily
+                spec: modelData
               }
             }
-          }
 
-          Text {
-            textFormat: Text.PlainText
-            visible: root.visibleBuckets.length === 0
-            width: parent.width
-            text: "No data for this period yet"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-          }
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              topPadding: Style.space(4)
+              text: root.accuracyNote
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            topPadding: Style.space(2)
-            text: root.footerText
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-            horizontalAlignment: Text.AlignLeft
+            Repeater {
+              model: root.configEstimateFields
+              ConfigRow {
+                required property var modelData
+                width: column.width
+                spec: modelData
+              }
+            }
+
+            PanelSeparator { foreground: root.foreground }
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "NEEDS A DAEMON RESTART"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.configRestartFields
+              ConfigRow {
+                required property var modelData
+                width: column.width
+                spec: modelData
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.configSaveError !== ""
+              width: parent.width
+              text: root.configSaveError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Row {
+              spacing: Style.space(8)
+
+              Button {
+                text: root.configSaving ? "Saving" : "Save"
+                enabled: !root.configSaving
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.space(2)
+                horizontalPadding: Style.space(10)
+                onClicked: root.commitConfig()
+              }
+
+              Button {
+                visible: root.restartRequired
+                text: "Restart sampler"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.space(2)
+                horizontalPadding: Style.space(10)
+                onClicked: root.restartSampler()
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.restartRequired
+              width: parent.width
+              text: "systemctl --user restart omarchy-energy"
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
         }
       }
+    }
+  }
+
+  component ConfigRow: Column {
+    id: cfg
+    property var spec: ({})
+    width: parent ? parent.width : 0
+    spacing: Style.space(2)
+
+    readonly property string key: spec && spec.key ? String(spec.key) : ""
+    readonly property string kind: spec && spec.kind ? String(spec.kind) : "text"
+
+    Row {
+      width: parent.width
+      spacing: Style.space(8)
+
+      Text {
+        textFormat: Text.PlainText
+        width: Style.space(118)
+        text: cfg.spec && cfg.spec.label ? String(cfg.spec.label) : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      TextField {
+        id: field
+        width: Style.space(150)
+        enabled: !root.configSaving
+        placeholderText: cfg.kind === "autoNumber" ? "auto" : ""
+        foreground: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        verticalPadding: Style.space(2)
+        inputMethodHints: (cfg.kind === "number" || cfg.kind === "autoNumber") ? Qt.ImhFormattedNumbersOnly : Qt.ImhNone
+        property int epoch: root.configEpoch
+        onEpochChanged: text = root.configLoadedText(cfg.key)
+        Component.onCompleted: text = root.configLoadedText(cfg.key)
+        onTextChanged: root.setConfigDraft(cfg.key, text)
+        onActiveFocusChanged: {
+          if (activeFocus) root.configFocusCount += 1
+          else root.configFocusCount = Math.max(0, root.configFocusCount - 1)
+        }
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape) {
+            root.closeConfig()
+            event.accepted = true
+          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            root.commitConfig()
+            event.accepted = true
+          }
+        }
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: !!(cfg.spec && cfg.spec.unit)
+        text: cfg.spec && cfg.spec.unit ? String(cfg.spec.unit) : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      width: parent.width
+      text: cfg.spec && cfg.spec.blurb ? String(cfg.spec.blurb) : ""
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: root.configFieldError(cfg.key) !== ""
+      width: parent.width
+      text: root.configFieldError(cfg.key)
+      color: root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
     }
   }
 

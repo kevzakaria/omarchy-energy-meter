@@ -90,7 +90,7 @@ Item {
     elide: Text.ElideRight
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
-    width: Style.space(56)
+    width: Style.space(80)
   }
 
   MouseArea {
