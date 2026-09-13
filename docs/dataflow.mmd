@@ -14,11 +14,11 @@ flowchart LR
   classDef measured fill:#0d3b2e,stroke:#3fb950,color:#e6edf3
   classDef estimated fill:#3d2a00,stroke:#d29922,color:#e6edf3
 
-  subgraph sample ["Per-sample — measured only"]
+  subgraph sample ["Per-sample: measured only"]
     R[Read counters] --> D[Delta /<br/>integrate] --> G[Guard: wrap,<br/>suspend/gap drop] --> S[Store<br/>measured uJ]
   end
 
-  subgraph query ["Query time — estimates enter here"]
+  subgraph query ["Query time: estimates enter here"]
     A[Aggregate daily<br/>day / week /<br/>month / year] --> B[Add<br/>baseline_w] --> P[Divide by<br/>psu_efficiency] --> K[kWh and cost<br/>via tariff]
   end
 

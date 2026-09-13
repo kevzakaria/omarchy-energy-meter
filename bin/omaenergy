@@ -966,7 +966,7 @@ def cmd_chart(args: argparse.Namespace, cfg: dict) -> dict:
 # --------------------------------------------------------------------------
 
 BLOCKS = "▏▎▍▌▋▊▉█"
-NO_SAMPLES = "no samples yet — is omarchy-energy.service running?"
+NO_SAMPLES = "no samples yet. Is omarchy-energy.service running?"
 
 
 def bar(fraction: float, width: int = 22) -> str:
@@ -1002,12 +1002,12 @@ def render_now(data: dict, cfg: dict) -> str:
         # True both when sampling began after this boot and when the early part
         # of a long boot has aged out of the raw table. Either way the figure
         # covers less than the boot, which is the only thing worth saying.
-        + ("  (partial — not sampled for the whole boot)" if data["uptime_truncated"] else ""),
+        + ("  (partial: not sampled for the whole boot)" if data["uptime_truncated"] else ""),
     ]
     if data["status"] == "stale":
-        lines.append(f"  ! last sample {data['sample_age_s']}s ago — daemon may be down")
+        lines.append(f"  ! last sample {data['sample_age_s']}s ago: daemon may be down")
     elif data["status"] == "no_cpu_sensor":
-        lines.append("  ! RAPL unreadable — CPU draw is missing from these totals")
+        lines.append("  ! RAPL unreadable: CPU draw is missing from these totals")
     return "\n".join(lines)
 
 

@@ -96,7 +96,7 @@ Panel {
   property int configDraftGen: 0
 
   // Currencies are fetched once per shell session, the first time the
-  // settings pane opens — not at widget construction and not on the
+  // settings pane opens, not at widget construction and not on the
   // `now` poll. An empty or failed list falls back to the free-text
   // field so a broken picker cannot lock the user out.
   property var currencyOptions: []
@@ -364,7 +364,7 @@ Panel {
     return t
   }
 
-  readonly property string accuracyNote: "CPU is a hardware energy counter; GPU is an integrated estimate. Baseline and PSU efficiency stand in for the rest, so the total is ±15–20% of a wall meter. Trends are accurate."
+  readonly property string accuracyNote: "CPU is a hardware energy counter; GPU is an integrated estimate. Baseline and PSU efficiency stand in for the rest, so the total is ±15-20% of a wall meter. Trends are accurate."
 
   readonly property var configMoneyFields: [
     { key: "tariff", label: "Tariff", unit: "/kWh", blurb: "price per kWh", kind: "number" },
@@ -727,7 +727,7 @@ Panel {
     if (data.baseline_w !== undefined) baselineW = num(data.baseline_w, baselineW)
     if (data.psu_efficiency !== undefined) psuEfficiency = num(data.psu_efficiency, psuEfficiency)
     // Absence of `watts` (or an explicit no_data status) is not a reading of
-    // zero — it is no sample. Leave last live numbers untouched but stop
+    // zero: it is no sample. Leave last live numbers untouched but stop
     // presenting them.
     if (nowStatus === "no_data" || data.watts === undefined) {
       hasSample = false
@@ -1526,7 +1526,7 @@ Panel {
       textFormat: Text.PlainText
       visible: cfg.usePicker
       width: parent.width
-      text: cfg.customOpen ? "Custom code (2–5 letters), then Save." : "Not listed? Custom code — any 2–5 letter code."
+      text: cfg.customOpen ? "Custom code (2-5 letters), then Save." : "Not listed? Custom code: any 2-5 letter code."
       color: root.muted
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -1627,7 +1627,7 @@ Panel {
     property real gpuW: 0
     property real restW: 0
     property real watts: 0
-    // Scale to the hero total, not to the sum of segments — the three parts
+    // Scale to the hero total, not to the sum of segments. The three parts
     // now add up to `watts` at the socket, so the bar fills without a fudge.
     readonly property real scale: Math.max(0, watts)
     implicitHeight: Math.max(Style.space(8), Math.round(Style.spacing.controlHeight * 0.28))

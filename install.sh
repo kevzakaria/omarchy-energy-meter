@@ -2,11 +2,11 @@
 # Install the energy-meter backend (CLI + user systemd unit + optional udev).
 # Idempotent: safe to re-run. Copies files, never symlinks.
 #
-# Never writes into /usr/share/omarchy/ and never edits shell.json —
+# Never writes into /usr/share/omarchy/ and never edits shell.json:
 # bar placement is `omarchy plugin enable`, not this installer.
 set -euo pipefail
 # The CLI shebang is #!/usr/bin/python3 (stdlib only; nothing to pip). Do not
-# switch it to /usr/bin/env python3 — env may resolve to a user-managed
+# switch it to /usr/bin/env python3: env may resolve to a user-managed
 # interpreter that the systemd service cannot see.
 
 usage() {

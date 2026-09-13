@@ -4,7 +4,7 @@ Live power draw on the Omarchy bar, and a panel that breaks your machine's
 energy use and cost down by **day, week, month, and year**.
 
 Most power widgets are wattmeters: they tell you what the machine is drawing
-right now and forget it a second later. This one is an **energy meter** — it
+right now and forget it a second later. This one is an **energy meter**: it
 integrates and keeps a permanent daily rollup, so you can answer "what did this
 computer actually cost me last month?"
 
@@ -14,7 +14,7 @@ computer actually cost me last month?"
 
 It is built around one rule: **never present an estimate as a measurement.**
 CPU and GPU draw are read from hardware. The rest of the machine cannot be, so
-it is an explicit, calibratable constant — and the UI always shows you what
+it is an explicit, calibratable constant. The UI always shows you what
 fraction of the number is real.
 
 ---
@@ -23,7 +23,7 @@ fraction of the number is real.
 
 Most people have no way to find out what their computer costs to run. A smart
 plug or an in-home energy display answers it instantly, but that means buying
-hardware, and plenty of houses have neither — a utility meter in a cupboard
+hardware, and plenty of houses have neither. A utility meter in a cupboard
 that reports once a month tells you about the whole house, not about this
 machine.
 
@@ -42,7 +42,7 @@ What that gets you is the part that is genuinely hard to guess:
   from the days the machine was simply switched off.
 - **A number you can put against a bill.** Not to the cent, but close enough
   to know whether this machine is a rounding error on your electricity bill or
-  a real line item — and close enough to tell whether a change you made
+  a real line item, and close enough to tell whether a change you made
   (undervolting, a power profile, leaving it on overnight) actually mattered.
 
 It is not a replacement for a wall meter, and it does not pretend to be: the
@@ -75,7 +75,7 @@ and the two agree closely from then on.
 
 ## Install
 
-Two steps, because `omarchy plugin add` only copies files — it never runs
+Two steps, because `omarchy plugin add` only copies files: it never runs
 install hooks and never runs `sudo`. The bar widget is the first step; the
 sampler that produces its data is the second.
 
@@ -86,7 +86,7 @@ omarchy plugin add https://github.com/kevzakaria/omarchy-energy-meter.git --enab
 # 2. the sampler daemon (+ the one root step, explained below)
 ~/.config/omarchy/plugins/io.github.kevzakaria.energy-meter/install.sh
 
-# 3. your electricity price — the default is a placeholder, not your tariff
+# 3. your electricity price: the default is a placeholder, not your tariff
 omaenergy config tariff=0.42 currency=EUR
 ```
 
@@ -123,17 +123,18 @@ term working and reports the CPU term as unavailable rather than guessing it.
 
 Data starts accumulating at install time. RAPL counters are volatile and carry
 no history, so **there is no way to recover consumption from before the daemon
-first ran** — the sooner it is running, the sooner the monthly view means
+first ran**. The sooner it is running, the sooner the monthly view means
 something.
 
 ---
 
 ## What you get
 
-**On the bar** — a bolt and the live figure. Right-click cycles what it shows:
+**On the bar**: a bolt and the live figure. Right-click cycles what it shows:
 live watts → today's kWh → this month's kWh. It goes to the theme's urgent
-colour above a configurable threshold, and dims to `⚡ —` if the backend stops
-answering (it will never show you a stale number styled as a live one).
+colour above a configurable threshold, and drops the number entirely if the
+backend stops answering. It will never show you a stale reading styled as a
+live one.
 
 <p align="center">
   <img src="docs/bar.png" alt="The bar widget: a bolt and the live figure" width="620">
@@ -153,7 +154,7 @@ answering (it will never show you a stale number styled as a live one).
   <img src="docs/settings.png" alt="The settings pane: price per kWh, a currency picker, and the estimate constants" width="380">
 </p>
 
-**Everything is configurable from the panel itself** — the gear in the panel's
+**Everything is configurable from the panel itself**: the gear in the panel's
 top-right corner opens this. Price per kWh, currency, the two
 estimate constants, and the sampling options, each with its units and a line
 saying what it does. No config file to find, no terminal needed.
@@ -162,7 +163,7 @@ The settings are grouped by consequence rather than by type, because that is
 the distinction that matters: the first group **re-prices every stored day the
 moment you save it**, while the second only changes future sampling and says so.
 
-The main view carries numbers and nothing else — no disclaimer paragraph, no
+The main view carries numbers and nothing else: no disclaimer paragraph, no
 tariff line. The explanation of *why* the total is an estimate lives in the
 settings pane, right next to the two constants that make it one, which is where
 someone reading it can actually act on it. What stays on the front is the live
@@ -182,8 +183,8 @@ This table is the most important thing in this README.
 
 | Term | Source | Real? |
 |---|---|---|
-| **CPU / SoC** | RAPL `package-*` energy counter. On AMD this is MSR `C001_029B` — the whole socket: core complexes plus the I/O die | **Measured.** A true accumulating energy counter, so its integral is exact at any sample rate |
-| **GPU** | amdgpu hwmon `power1_average` (label `PPT`) | **Measured, integrated.** Not a counter — a firmware-filtered power estimate in whole watts, integrated by sampling. See [GPU sampling](#gpu-sampling-is-quadrature-not-counting) |
+| **CPU / SoC** | RAPL `package-*` energy counter. On AMD this is MSR `C001_029B` (the whole socket: core complexes plus the I/O die) | **Measured.** A true accumulating energy counter, so its integral is exact at any sample rate |
+| **GPU** | amdgpu hwmon `power1_average` (label `PPT`) | **Measured, integrated.** Not a counter: a firmware-filtered power estimate in whole watts, integrated by sampling. See [GPU sampling](#gpu-sampling-is-quadrature-not-counting) |
 | **DRAM, NVMe, SATA, fans, chipset, USB** | `baseline_w` constant | **Estimated.** A typical desktop board exposes no sensor for any of it |
 | **PSU conversion loss** | `psu_efficiency` constant | **Estimated.** Not observable from inside the machine at all |
 
@@ -242,7 +243,7 @@ $$\text{cost} = \text{kWh} \times \text{tariff}$$
 
 Every watt and kWh the tool reports is **at-socket**: each measured component
 is divided by $\eta_{\text{PSU}}$ individually and the estimate is added in, so
-the parts always sum to the whole — `cpu_w + gpu_w + rest_w == watts` and
+the parts always sum to the whole: `cpu_w + gpu_w + rest_w == watts` and
 `cpu_kwh + gpu_kwh + rest_kwh == kwh`, exactly. The raw sensor-side values are
 still available as `cpu_dc_w` and `gpu_dc_w` for calibration.
 
@@ -250,49 +251,54 @@ still available as `cpu_dc_w` and `gpu_dc_w` for calibration.
 
 ```console
 $ omaenergy now
-  now        183.6 W    at socket, mean over the last 10s
-                        cpu 88.2 + gpu 59.4 + rest 36.0 (estimated)
-                        80% of this reading is hardware-measured
-  today        1.358 kWh  0.41 EUR
-  month        1.358 kWh  0.41 EUR
-  boot         1.358 kWh  (partial — not sampled for the whole boot)
+  now        187.7 W    at socket, mean over the last 10s
+                        cpu 89.8 + gpu 61.9 + rest 36.0 (estimated)
+                        81% of this reading is hardware-measured
+  today      1.594 kWh  €0.48
+  month      1.594 kWh  €0.48
+  boot       1.594 kWh  (partial: not sampled for the whole boot)
 ```
 
-Sensors read 78.5 W CPU and 52.9 W GPU on the DC side, with
+Sensors read 80.0 W CPU and 55.1 W GPU on the DC side, with
 `baseline_w = 32`, `psu_efficiency = 0.89`, `tariff = 0.30`:
 
 | Step | Value |
 |---|---|
-| $88.2 = 78.5 / 0.89$ | CPU at socket |
-| $59.4 = 52.9 / 0.89$ | GPU at socket |
+| $89.8 \approx 80.0 / 0.89$ | CPU at socket |
+| $61.9 = 55.1 / 0.89$ | GPU at socket |
 | $36.0 = 32 / 0.89$ | estimated remainder at socket |
-| $183.6 = 88.2 + 59.4 + 36.0$ | total — the parts add up |
-| $0.804 = (78.5 + 52.9)/(78.5 + 52.9 + 32)$ | measured share, shown as 80% |
+| $187.7 = 89.8 + 61.9 + 36.0$ | total: the parts add up |
+| $0.808 = (80.0 + 55.1)/(80.0 + 55.1 + 32)$ | measured share, shown as 81% |
+
+The first row is approximate only because the DC figures are displayed rounded
+to 0.1 W; the arithmetic itself runs on the unrounded values, which is why the
+total is exact.
 
 And the same day as a bucket:
 
 ```console
 $ omaenergy day
-                   kWh      cost      avg      max
-                                  tracked  ~sample
-  2026-09-13     1.358     0.41E     142W     245W  ██████████████████████  (9.5h tracked)
+                   kWh   cost      avg      max
+                               tracked  ~sample
+  2026-09-13     1.594  €0.48     145W     245W  ██████████████████████  (11h tracked)
+  total          1.594  €0.48
 ```
 
 | Field | Meaning |
 |---|---|
-| `1.358 kWh` | $0.508_{\text{cpu}} + 0.508_{\text{gpu}} + 0.343_{\text{rest}}$ |
-| `142 W` avg tracked | $1.358\,\text{kWh} \times 1000 / 9.536\,\text{h}$ — the average **while sampling**, not across the calendar day |
+| `1.594 kWh` | $0.6065_{\text{cpu}} + 0.5918_{\text{gpu}} + 0.3960_{\text{rest}} = 1.5943$ |
+| `145 W` avg tracked | $1.594\,\text{kWh} \times 1000 / 11.014\,\text{h}$: the average **while sampling**, not across the calendar day |
 | `245 W` max sample | the largest single-interval **average**. A spike shorter than `interval_s` is averaged away, which is why this is never called a peak |
-| `9.5h tracked` | coverage $= 9.536 / 11.49 = 0.83$ — the day is 83% sampled, so this row is a partial total and marked as one |
+| `11h tracked` | coverage $= 11.014 / 12.97 = 0.85$: the day is 85% sampled, so this row is a partial total and marked as one |
 
 ---
 
 ## Accuracy, and how to calibrate it away
 
-Out of the box, expect the total to sit within roughly **±15–20% of a wall
+Out of the box, expect the total to sit within roughly **±15-20% of a wall
 meter**, dominated entirely by the two estimated constants.
 
-What it gets *right* regardless is **trends and comparisons** — the part of the
+What it gets *right* regardless is **trends and comparisons**: the part of the
 draw that varies with what you are doing is the part that is genuinely
 measured, so "this week was 40% heavier than last week" is trustworthy even
 while the absolute figure carries a constant-offset uncertainty. At idle the
@@ -309,7 +315,7 @@ minutes:**
 4. `omaenergy config baseline_w=37.5`. Your whole history is now corrected too.
 
 If you know your PSU's efficiency curve, set `psu_efficiency` for your typical
-load while you are there — 80+ Gold units sit near 0.90 at mid load and worse
+load while you are there. 80+ Gold units sit near 0.90 at mid load and worse
 when lightly loaded.
 
 The default `baseline_w` follows your chassis type: **32 W** for a desktop
@@ -344,7 +350,7 @@ deliberately not used, sample counts, and how many intervals were dropped.
 
 ## Settings
 
-**Widget** — configurable from the bar's settings UI, stored in `shell.json`:
+**Widget**: configurable from the bar's settings UI, stored in `shell.json`:
 
 | Key | Default | |
 |---|---|---|
@@ -352,7 +358,7 @@ deliberately not used, sample counts, and how many intervals were dropped.
 | `highWattThreshold` | 300 | Urgent colour at or above this many watts |
 | `barLabelMode` | `watts` | `watts` / `todayKwh` / `monthKwh`. Right-click to cycle |
 
-**Backend** — one source of truth, `~/.config/omarchy-energy/config.json`.
+**Backend**: one source of truth, `~/.config/omarchy-energy/config.json`.
 You never need to hand-edit it. Every key below is editable from the panel's
 gear, and the same keys are settable from the terminal; both go through
 `omaenergy config`, which validates, clamps and writes atomically:
@@ -366,21 +372,21 @@ omaenergy config baseline_w=37.5            # after calibrating
 
 | Key | Default | |
 |---|---|---|
-| `tariff` | 0.30 | **Price per kWh. Set this first** — the shipped value is a placeholder, not your tariff. Retroactive |
-| `currency` | `EUR` | ISO code, picked from a searchable list in the settings pane. Decides the symbol and the natural precision: `€0.42`, `Rp 2,041`, `¥180`. Any 2–5 letter code is accepted, listed or not — see `omaenergy currencies` |
+| `tariff` | 0.30 | **Price per kWh. Set this first**: the shipped value is a placeholder, not your tariff. Retroactive |
+| `currency` | `EUR` | ISO code, picked from a searchable list in the settings pane. Decides the symbol and the natural precision: `€0.42`, `Rp 2,041`, `¥180`. Any 2-5 letter code is accepted, listed or not. See `omaenergy currencies` |
 | `currency_symbol` | auto | Override the symbol if your currency is not in the table, or you simply prefer another glyph |
 | `cost_decimals` | auto | Decimal places for money. `2` where a cent exists, `0` for IDR / JPY / KRW / VND where it does not |
 | `baseline_w` | 32 desktop / 12 laptop | The unmeasurable remainder. **Calibrate this.** Retroactive |
 | `psu_efficiency` | 0.89 | AC→DC loss. Retroactive |
 | `interval_s` | 10 | Database row interval. Needs a service restart |
-| `gpu_interval_s` | 1.0 | GPU sub-sample rate — this is what sets GPU accuracy |
+| `gpu_interval_s` | 1.0 | GPU sub-sample rate: this is what sets GPU accuracy |
 | `raw_retention_days` | 30 | How long per-sample rows are kept for charts. The daily rollup is kept forever |
 | `sanity_max_cpu_w` | 1000 | Package draw above this is treated as a counter reset and dropped |
 | `gpu_source` | `auto` | `auto`, `off`, or an explicit hwmon path |
 
 ### Why price changes are retroactive
 
-Everything in the first group — price, currency, baseline, PSU efficiency —
+Everything in the first group (price, currency, baseline, PSU efficiency)
 **applies to your entire history the moment you save it**, with no restart and
 no data migration. That is not a convenience feature; it falls out of the
 storage decision above. Cost was never written into a row, so correcting your
@@ -388,7 +394,7 @@ tariff simply re-derives every number the tool has ever reported.
 
 Practically: you can run the meter for a month without knowing your exact
 tariff, then enter it and immediately get a correct month. And when your
-utility raises the price, you get to choose — set the new one and see the whole
+utility raises the price, you get to choose: set the new one and see the whole
 history repriced, or keep the old one for comparison. Nothing is lost either
 way.
 
@@ -413,7 +419,7 @@ The remaining keys only affect sampling, so they take effect on
 
 Two tables. `samples` is one row per interval of raw measured µJ, pruned after
 `raw_retention_days`, and exists only to draw charts. `daily` is one row per
-local day, cumulative, and **kept forever** — week, month and year are
+local day, cumulative, and **kept forever**: week, month and year are
 aggregated from it, so a year of history is 365 rows.
 
 Sampling costs two sysfs reads plus ten GPU reads and one SQLite write per
@@ -433,13 +439,13 @@ integrating it into a plausible-looking number.
 | AMD desktop CPU + discrete AMD GPU | **Verified.** The development machine (5950X + RX 7800 XT) |
 | Any CPU exposing RAPL `package-*` | Supported. Multiple sockets are summed |
 | AMD APU (integrated graphics) | CPU term only. The iGPU is already inside the RAPL package figure, and amdgpu's `power1_average` on an APU is documented to include the CPU, so counting it would nearly double the machine. The GPU term is dropped and the reason is reported in `status` |
-| Multiple AMD GPUs | The card with the highest `power1_cap` is chosen, never the lowest hwmon index — `hwmon10` sorts before `hwmon2`, so index order would happily measure a 15 W iGPU and ignore a 300 W card |
+| Multiple AMD GPUs | The card with the highest `power1_cap` is chosen, never the lowest hwmon index: `hwmon10` sorts before `hwmon2`, so index order would happily measure a 15 W iGPU and ignore a 300 W card |
 | NVIDIA / Intel GPU | Not read. The GPU term is reported unavailable rather than silently zero |
 | Intel `psys` / `dram` zones | **Detected, not used.** `psys` would be strictly better than package-plus-estimate and `dram` would shrink the estimate, but neither could be verified on real hardware here. `omaenergy status` lists them as available and unused |
 | No readable RAPL | The daemon refuses to start rather than record rows with no CPU energy |
 
 Adding a path we cannot test is the single most valuable contribution to this
-project — see [CONTRIBUTING.md](CONTRIBUTING.md#hardware-support-contributions)
+project. See [CONTRIBUTING.md](CONTRIBUTING.md#hardware-support-contributions)
 for what evidence to include.
 
 ---
@@ -451,7 +457,7 @@ real hardware, and three of them came out of an audit that found them broken.
 
 **The RAPL `core` zone is ignored.** On Zen it is fed by
 `MSR_AMD_CORE_ENERGY_STATUS`, which is per-core, and powercap reads it on the
-package's lead CPU only — so the sysfs `core` file is *one physical core*.
+package's lead CPU only, so the sysfs `core` file is *one physical core*.
 Measured: pinning a busy loop to cpu0 raised it 6.6 W, pinning to cpu8 did not
 move it at all, and with 32 threads loaded it read 5.8 W against a package
 reading of 130.2 W. It is a subset of `package-0`, so adding them would double
@@ -461,7 +467,7 @@ count that core.
 `max_energy_range_uj`, so deltas are taken modulo that range. A 10 s interval is
 about 46× shorter than one wrap at this CPU's power limit, so a double wrap is
 impossible. But a *reset* is arithmetically identical to a wrap and yields a
-delta of nearly the whole range — about 6.5 kW over 10 s. Any interval implying
+delta of nearly the whole range: about 6.5 kW over 10 s. Any interval implying
 more than `sanity_max_cpu_w` of package draw is discarded as a reset, and any
 interval longer than `max(4 × interval_s, 60 s)` is discarded as a suspend or
 stall. Both are logged and both reduce `coverage` honestly instead of inventing
@@ -472,13 +478,13 @@ so its energy is only as good as the sample rate. Measured against a dense
 100 ms reference trace on this hardware: a 10 s trapezoid was off by −2.0% at
 idle and +2.6% under light load, while 1 s sub-sampling came in at **−0.39%**.
 Hence `gpu_interval_s` defaults to 1 s while database rows stay at 10 s. The CPU
-term needs none of this — it is a counter, so any spacing is exact.
+term needs none of this: it is a counter, so any spacing is exact.
 
 **Partial buckets are labelled.** `coverage` is the fraction of a bucket
 actually sampled, and averages are explicitly "while tracked". A day the
 machine was off for 18 hours reads `coverage: 0.25`, not "a cheap day". For a
 month that is 3% sampled, the tracked average and the calendar average differ
-by a factor of 30 — so the two are never conflated.
+by a factor of 30, so the two are never conflated.
 
 **Nothing is labelled as more than it is.** The live figure is a mean over the
 last interval, not an instant. `max_sample_w` is the largest interval average,
@@ -490,9 +496,10 @@ that would render as a measurement.
 
 ## Troubleshooting
 
-**Bar shows `⚡ —`** — the backend is not answering. The widget judges health by
-whether fresh samples are *arriving*, not by exit codes, because a command that
-cannot be executed produces no exit code at all. Check:
+**Bar shows no number, just a dimmed bolt**: the backend is not answering. The
+widget judges health by whether fresh samples are *arriving*, not by exit
+codes, because a command that cannot be executed produces no exit code at all.
+Check:
 
 ```bash
 systemctl --user status omarchy-energy
@@ -500,19 +507,19 @@ journalctl --user -u omarchy-energy -n 50
 omaenergy now
 ```
 
-**`no readable RAPL package zone`** — the udev rule is missing, or you are not
+**`no readable RAPL package zone`**: the udev rule is missing, or you are not
 in `wheel`. Run `install.sh` again, or check `id` and
 `ls -l /sys/class/powercap/intel-rapl:0/energy_uj` (it should be
 `-r--r----- root wheel`).
 
-**GPU reads 0 W** — expected on NVIDIA, Intel graphics, and AMD APUs.
+**GPU reads 0 W**: expected on NVIDIA, Intel graphics, and AMD APUs.
 `omaenergy status` prints the reason under `gpu_skipped`.
 
-**Widget edits appear to do nothing** — saving a file reloads plugin *code* but
+**Widget edits appear to do nothing**: saving a file reloads plugin *code* but
 does not re-instantiate an already-mounted bar widget. Run
 `omarchy restart shell`.
 
-**Numbers look too high or too low** — you have not calibrated `baseline_w`.
+**Numbers look too high or too low**: you have not calibrated `baseline_w`.
 See [above](#accuracy-and-how-to-calibrate-it-away). Check `measured_share`
 in `omaenergy now --json`: the lower it is, the more of the figure is your
 estimate rather than your hardware.
@@ -535,7 +542,7 @@ path and the exact command; add `--purge` if you really want it gone.
 ## Contributing
 
 Contributions are genuinely welcome, and hardware support is the most useful
-kind — this was written on one desktop, and almost every plausible bug in a
+kind. This was written on one desktop, and almost every plausible bug in a
 project like this is hardware-dependent.
 
 **[CONTRIBUTING.md](CONTRIBUTING.md)** covers the development loop (including
@@ -547,7 +554,7 @@ Good first contributions:
 
 - `psys` / `dram` support on Intel, with the evidence to back the semantics
 - An NVIDIA GPU term via NVML
-- A smart-plug source — a Shelly/Tasmota/Kasa reading is true wall power at
+- A smart-plug source: a Shelly/Tasmota/Kasa reading is true wall power at
   under 1% error, and the storage and rollup layers are already source-agnostic
 - Calibrated `baseline_w` figures for real machines, so the defaults improve
 
@@ -565,12 +572,16 @@ afterwards.
 
 That split is forced rather than chosen. `omarchy plugin add` clones the
 repository's default branch and `omarchy plugin update` fast-forwards to it, and
-neither can be pointed at a tag — so a GitHub Release publishes nothing, and a
+neither can be pointed at a tag, so a GitHub Release publishes nothing, and a
 stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
-### Unreleased — since the first working build
+### 1.0.0
+
+First release. The list below is longer than a first release usually warrants
+because most of it is corrections found by auditing the thing before anyone
+relied on it.
 
 **Added**
 
@@ -578,7 +589,7 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   backend key is editable there, grouped by consequence: the ones that reprice
   your whole history versus the ones that need a daemon restart, with the
   restart command offered as a button when it is actually needed.
-- `omaenergy config` — the validated, atomic write path behind that pane, and
+- `omaenergy config`: the validated, atomic write path behind that pane, and
   the same thing from a terminal, so the price per kWh no longer means
   hand-editing JSON. `tariff`, `currency`, `baseline_w` and `psu_efficiency`
   apply to the **whole history** the moment they are saved.
@@ -590,13 +601,13 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 - `omaenergy currencies` lists the known codes with their symbol and precision.
   The settings pane's currency field is a searchable dropdown populated from
   it, showing each option's consequence (`EUR · € · €1,234.00`), so there is no
-  second copy of the table in the QML. The list is not a cage: any 2–5 letter
+  second copy of the table in the QML. The list is not a cage: any 2-5 letter
   code can be entered, and a code that is already saved but unlisted stays
   selected instead of snapping to the first row.
 - A "Why this exists" section, because the point is easy to miss: this is for
   people without a smart plug or a whole-home energy monitor. The counters are
   already in the machine and are simply never accumulated.
-- `measured_share` in the payload and in the panel — the share of the reading
+- `measured_share` in the payload and in the panel: the share of the reading
   that is hardware-measured rather than the baseline estimate. The plugin's
   central claim was previously invisible in its own UI.
 - GPU sub-sampling at `gpu_interval_s` (default 1 s), independent of the
@@ -607,18 +618,18 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 **Changed**
 
 - The main panel view is numbers only. The accuracy paragraph and the tariff
-  line moved into the settings pane, beside `baseline_w` and `psu_efficiency` —
+  line moved into the settings pane, beside `baseline_w` and `psu_efficiency`:
   the two constants that are the reason the total is an estimate. A caveat sat
   next to a dashboard is read once and then becomes furniture; sat next to the
   fields that fix it, it is a call to action. The live `measured_share` figure
   stays on the front, because it is a measurement rather than prose.
 
-**Fixed** — most of these came out of two independent audits run before any
+**Fixed**: most of these came out of two independent audits run before any
 release, and they are listed because they explain why numbers moved
 
 - **Mixed units in the live split.** The total and the estimated remainder were
   at-socket while CPU and GPU were raw DC sensor watts, so the panel's stacked
-  bar did not add up to the number above it — a measured 14.2 W discrepancy.
+  bar did not add up to the number above it: a measured 14.2 W discrepancy.
   Everything is at-socket now and the parts sum exactly.
 - **The daemon kept recording after losing RAPL.** A re-probe that found no
   zones returned a zero delta, so rows were written with no CPU energy while
@@ -660,4 +671,4 @@ release, and they are listed because they explain why numbers moved
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

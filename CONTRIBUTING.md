@@ -3,14 +3,13 @@
 This is the working copy of an Omarchy **bar-widget** plugin. It runs
 unsandboxed inside the long-lived `omarchy-shell` Quickshell process, plus a
 separate Python sampler daemon. The notes below are the ones that actually
-break a desktop or produce a wrong watt reading — not a generic GitHub
+break a desktop or produce a wrong watt reading, not a generic GitHub
 workflow.
 
-This file is not called `AGENTS.md` or `CLAUDE.md`, and it is not at a path
-the shell treats as agent instructions, on purpose. `omarchy plugin add`
-copies the whole tree into `~/.config/omarchy/plugins/`, so a root agent file
-would become ambient context for whoever installed the plugin. Do not add
-one.
+There is no agent instruction file at the repository root, on purpose.
+`omarchy plugin add` copies the whole tree into `~/.config/omarchy/plugins/`,
+so a root-level agent instruction file of any kind would become ambient
+context for that user's own tooling. Do not add one.
 
 ## Project shape
 
@@ -29,7 +28,7 @@ git symlinks anywhere in the tree (mode 120000); the validator rejects them.
 | `docs/architecture.mmd` `docs/dataflow.mmd` | Component and pipeline diagrams (PNG siblings for the README). |
 
 Plugin id: `io.github.kevzakaria.energy-meter`. It is lowercase and
-**permanent** — it cannot be renamed or reused.
+**permanent**: it cannot be renamed or reused.
 
 Runtime state lives outside the plugin tree:
 
@@ -100,7 +99,7 @@ file atomically.
 Do not move `tariff`, `currency`, `baseline_w` or `psu_efficiency` into
 `manifest.json`'s `barWidget.schema`. That store is `shell.json`, which the CLI
 does not read, so the widget and the terminal would then disagree about what
-your electricity costs — and the CLI is what actually computes the number. One
+your electricity costs. The CLI is what actually computes the number. One
 store, one writer, is the whole reason this is not a widget setting.
 
 Money is rendered from `currency_symbol` and `cost_decimals` in the payload,
@@ -112,7 +111,7 @@ Work on them independently:
 | Change | Restart |
 | --- | --- |
 | QML | `omarchy restart shell` |
-| CLI query path (`now`, `day`, `status`, …) | none — run it in a terminal |
+| CLI query path (`now`, `day`, `status`, …) | none: run it in a terminal |
 | Sampler loop inside the daemon | `systemctl --user restart omarchy-energy.service` |
 
 The CLI is an ordinary Python file:
@@ -181,9 +180,9 @@ would lie.
 
 Almost every plausible bug in this project is hardware-dependent. Attach:
 
-1. `omaenergy status --json` — discovered sensors, database location, sample
+1. `omaenergy status --json`: discovered sensors, database location, sample
    counts.
-2. `omaenergy now --json` — what the widget would have rendered right then.
+2. `omaenergy now --json`: what the widget would have rendered right then.
 3. CPU and GPU model.
 4. Whether the machine is a laptop.
 
@@ -214,7 +213,7 @@ There is no enforced commit convention in this ecosystem. Please still:
 
 - **open it against `release`, not `main`.** GitHub will offer `main`; retarget
   it. `main` is what every installed copy fast-forwards to on `omarchy plugin
-  update`, so it moves only when a version is cut — see
+  update`, so it moves only when a version is cut. See
   [Release](#release--marketplace)
 - one logical change per PR
 - an explanation of *why*, not only what
@@ -254,7 +253,7 @@ git -C "$dir" merge --ff-only FETCH_HEAD
 
 Both follow the repository's **default branch HEAD**. A tag or a GitHub Release
 changes nothing about what a user receives, and the marketplace's pinned SHA
-only governs what was *reviewed*, not what gets installed — the listing and the
+only governs what was *reviewed*, not what gets installed. The listing and the
 installation are two different trust boundaries.
 
 So the only real lever is what the default branch points at. Three tiers, each
@@ -330,7 +329,7 @@ gh api -X POST repos/kevzakaria/omarchy-energy-meter/releases/generate-notes \
 ```
 
 For **v1.0.0** the generated half comes out nearly empty, because everything up
-to it landed as direct commits rather than PRs — there is no PR history to
+to it landed as direct commits rather than PRs. There is no PR history to
 categorise. Drop `--notes-start-tag`, and let the Highlights carry the whole
 story; the README's Changelog already has it in the right shape to lift from.
 Releases after that get the categorised list for free, provided PRs are
@@ -338,9 +337,9 @@ labelled.
 
 **Say plainly what the release does and does not do for a reader.** A GitHub
 Release updates nobody: installs track `main`, so the tag is a human-readable
-record, not a distribution channel. If a version needs an action — a
+record, not a distribution channel. If a version needs an action (a
 `systemctl --user restart omarchy-energy` because `interval_s` handling changed,
-or `install.sh` re-run because the unit or udev rule changed — put that at the
+or `install.sh` re-run because the unit or udev rule changed), put that at the
 top of the Highlights, because nothing else will tell the user.
 
 **Never force-push or rebase `main`.** `omarchy-plugin-update` merges with
@@ -355,11 +354,11 @@ reviewed on `release`, with no merge commit invented at publish time.
 
 **GitHub will offer `main` as the PR base**, because Omarchy requires `main` to
 be the repository default. That cannot be changed without breaking installs, so
-the guard is a PR template that says to retarget — check the base branch before
+the guard is a PR template that says to retarget. Check the base branch before
 merging anything.
 
-Bumping `version` in `manifest.json` is still worth doing — it is what the
-marketplace and `omarchy plugin list` display — but it publishes nothing on its
+Bumping `version` in `manifest.json` is still worth doing (it is what the
+marketplace and `omarchy plugin list` display), but it publishes nothing on its
 own.
 
 To publish a newer commit, open a **Plugin verification** issue on
