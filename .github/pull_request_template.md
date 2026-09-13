@@ -28,7 +28,7 @@ Use the "base" dropdown above to switch to `release`.
 - [ ] `python3 -m py_compile bin/omaenergy` passes
 - [ ] Ran `omarchy restart shell` and checked the shell log for QML errors
       attributable to this plugin
-- [ ] Changelog entry added to the README under `Unreleased`, if a user can see
+- [ ] Changelog entry added to `CHANGELOG.md` under `Unreleased`, if a user can see
       the change: a new setting, a renamed JSON field, or a number that moves
 - [ ] No estimate is presented with a label that implies measurement
 - [ ] No new runtime dependency (backend is Python 3 stdlib only)

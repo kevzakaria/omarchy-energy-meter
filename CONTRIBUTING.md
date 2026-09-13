@@ -26,6 +26,7 @@ git symlinks anywhere in the tree (mode 120000); the validator rejects them.
 | `udev/99-omarchy-energy-rapl.rules` | Read-only `energy_uj` for group `wheel`. |
 | `install.sh` / `uninstall.sh` | Second, explicitly user-run install. Copies files; never symlinks. |
 | `docs/architecture.mmd` `docs/dataflow.mmd` | Component and pipeline diagrams (PNG siblings for the README). |
+| `CHANGELOG.md` | Release history. `Unreleased` accumulates here on `release`; a cut renames that heading. |
 
 Plugin id: `io.github.kevzakaria.energy-meter`. It is lowercase and
 **permanent**: it cannot be renamed or reused.
@@ -224,7 +225,7 @@ There is no enforced commit convention in this ecosystem. Please still:
 - an explanation of *why*, not only what
 - which CPU/GPU the change was tested on, and desktop vs laptop
 - README / CONTRIBUTING updates when behaviour changes
-- **a Changelog entry in the README** under `Unreleased`, if the change is
+- **a Changelog entry in `CHANGELOG.md`** under `Unreleased`, if the change is
   visible to a user: a new setting, a renamed JSON field, a number that moves.
   Say what moved and why, because someone will diff last month's kWh against
   this month's and deserve to know whether the machine changed or the maths did
@@ -267,7 +268,7 @@ with one job:
 | Branch | Who writes to it | What it means |
 | --- | --- | --- |
 | `feature/*` | you | one change, rewrite freely |
-| `release` | merged PRs | staged for the next version; the Changelog's `Unreleased` section accumulates here |
+| `release` | merged PRs | staged for the next version; `CHANGELOG.md`'s `Unreleased` section accumulates here |
 | `main` | a release merge only | **live**: every installed copy fast-forwards to it on `omarchy plugin update` |
 
 PRs target `release`. Work piles up there until a version is worth cutting,
@@ -278,13 +279,19 @@ reconstructed from a month of commit messages.
 Cutting a version, on `release`:
 
 ```sh
-# rename the Changelog's `Unreleased` heading to the version, bump
+# rename CHANGELOG.md's `Unreleased` heading to the version, bump
 # manifest.json "version", commit
 git switch main
 git merge --ff-only release     # keeps main a linear prefix of release
-git tag -a v1.2.0 -m 'v1.2.0'
+git tag -a v1.3.0 -m 'v1.3.0'
 git push origin main --follow-tags
 ```
+
+Cut from `release`, never from `main`. Editing on `main` and then running the
+merge makes it a silent no-op: the branch is already ahead, `--ff-only`
+succeeds with nothing to do, and the version lands without ever having been on
+`release`. That has happened; `git rev-parse main release` before tagging is
+the cheap check.
 
 Then publish the release notes, open the marketplace verification issue with the
 new `main` SHA, and start a fresh `Unreleased` section on `release`.
@@ -336,7 +343,7 @@ gh api -X POST repos/kevzakaria/omarchy-energy-meter/releases/generate-notes \
 For **v1.0.0** the generated half comes out nearly empty, because everything up
 to it landed as direct commits rather than PRs. There is no PR history to
 categorise. Drop `--notes-start-tag`, and let the Highlights carry the whole
-story; the README's Changelog already has it in the right shape to lift from.
+story; `CHANGELOG.md` already has it in the right shape to lift from.
 Releases after that get the categorised list for free, provided PRs are
 labelled.
 
