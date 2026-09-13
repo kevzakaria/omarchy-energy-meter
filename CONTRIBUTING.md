@@ -92,6 +92,21 @@ JSON; it never opens sysfs, SQLite, or the config file itself.
 - **Renaming or removing a field is a breaking change.** Update `bin/omaenergy`
   and the QML in the same commit.
 
+Settings flow the same way, in one direction each. The widget **reads** current
+values out of the `now` payload and **writes** them only by running
+`omaenergy config key=value`, which validates, clamps and writes the config
+file atomically.
+
+Do not move `tariff`, `currency`, `baseline_w` or `psu_efficiency` into
+`manifest.json`'s `barWidget.schema`. That store is `shell.json`, which the CLI
+does not read, so the widget and the terminal would then disagree about what
+your electricity costs — and the CLI is what actually computes the number. One
+store, one writer, is the whole reason this is not a widget setting.
+
+Money is rendered from `currency_symbol` and `cost_decimals` in the payload,
+never from the `currency` code. Slicing the code is how `EUR` once rendered as
+`0.42E`, and there is no prefix of `IDR` that means `Rp`.
+
 Work on them independently:
 
 | Change | Restart |
@@ -201,7 +216,14 @@ There is no enforced commit convention in this ecosystem. Please still:
 - an explanation of *why*, not only what
 - which CPU/GPU the change was tested on, and desktop vs laptop
 - README / CONTRIBUTING updates when behaviour changes
+- **a Changelog entry in the README** under `Unreleased`, if the change is
+  visible to a user: a new setting, a renamed JSON field, a number that moves.
+  Say what moved and why, because someone will diff last month's kWh against
+  this month's and deserve to know whether the machine changed or the maths did
 - leave `preview.png` alone unless the UI actually changed
+- any new image gets an explicit width in the README
+  (`<img src="..." width="...">`). A bare `![](...)` renders at full container
+  width, which turned a 1090x1240 panel screenshot into a wall
 
 The marketplace listing is a screenshot of a specific commit. Unrelated
 churn in `preview.png` is a visual lie about what that SHA draws.
@@ -257,3 +279,18 @@ npx --yes @mermaid-js/mermaid-cli \
 npx --yes @mermaid-js/mermaid-cli \
   -i docs/dataflow.mmd -o docs/dataflow.png -t dark -b '#0d1117'
 ```
+
+Pass `-s 2` as well, so the PNG is oversampled and stays crisp when the README
+displays it at half its pixel width.
+
+**`docs/dataflow.mmd` is one left-to-right chain on purpose.** The obvious
+shape is two stacked lanes, each flowing across, but Mermaid ignores a
+subgraph's own `direction` as soon as an edge crosses the subgraph boundary.
+With the handoff edge, `flowchart TB` collapses all eight steps into a single
+650x2036 column; drop the edge to get lanes back and you lose both the handoff
+and the left-to-right ordering of the two phases, which are the only two things
+the diagram exists to show. Do not "fix" it back to `TB` without checking the
+rendered aspect ratio.
+
+Also: keep `%%` comments free of backticks. Mermaid's tokenizer fails on them
+with a misleading `Parse error on line 1`.

@@ -8,7 +8,9 @@ right now and forget it a second later. This one is an **energy meter** — it
 integrates and keeps a permanent daily rollup, so you can answer "what did this
 computer actually cost me last month?"
 
-![Energy Meter panel](preview.png)
+<p align="center">
+  <img src="preview.png" alt="Energy Meter panel and bar widget" width="400">
+</p>
 
 It is built around one rule: **never present an estimate as a measurement.**
 CPU and GPU draw are read from hardware. The rest of the machine cannot be, so
@@ -32,6 +34,7 @@ fraction of the number is real.
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [Contributing](#contributing)
+- [Changelog](#changelog)
 
 ---
 
@@ -47,7 +50,14 @@ omarchy plugin add https://github.com/kevzakaria/omarchy-energy-meter.git --enab
 
 # 2. the sampler daemon (+ the one root step, explained below)
 ~/.config/omarchy/plugins/io.github.kevzakaria.energy-meter/install.sh
+
+# 3. your electricity price — the default is a placeholder, not your tariff
+omaenergy config tariff=0.42 currency=EUR
 ```
+
+Step 3 is also available from the panel, and it is retroactive: set it whenever
+you find your last bill and every figure the meter has ever recorded is
+repriced.
 
 `install.sh` is idempotent, prints what it will do before doing it, and needs
 root for exactly one thing: a udev rule. Pass `--no-udev` to skip that and see
@@ -90,7 +100,9 @@ live watts → today's kWh → this month's kWh. It goes to the theme's urgent
 colour above a configurable threshold, and dims to `⚡ —` if the backend stops
 answering (it will never show you a stale number styled as a live one).
 
-![Bar widget](docs/bar.png)
+<p align="center">
+  <img src="docs/bar.png" alt="The bar widget: a bolt and the live figure" width="620">
+</p>
 
 **In the panel**
 
@@ -137,7 +149,9 @@ history away and start again. (This already paid for itself: a 1000× unit-bug
 in the kWh conversion was fixed with no data loss, because the stored rows were
 raw joules.)
 
-![Data flow](docs/dataflow.png)
+<p align="center">
+  <img src="docs/dataflow.png" alt="Measured microjoules are stored; estimates are applied only at query time" width="900">
+</p>
 
 ### Per sample
 
@@ -231,7 +245,7 @@ minutes:**
 2. `omaenergy now --json` → take `cpu_dc_w` and `gpu_dc_w`, e.g. 41 and 15.
 3. $P_{\text{base}} = (\text{metered} \times \eta) - (\text{cpu}_{dc} + \text{gpu}_{dc})$
    $= (105 \times 0.89) - 56 = 37.5$ W.
-4. Put that in `baseline_w`. Your whole history is now corrected too.
+4. `omaenergy config baseline_w=37.5`. Your whole history is now corrected too.
 
 If you know your PSU's efficiency curve, set `psu_efficiency` for your typical
 load while you are there — 80+ Gold units sit near 0.90 at mid load and worse
@@ -256,6 +270,8 @@ omaenergy month
 omaenergy year -n 0           # every year on record (0 = all)
 omaenergy chart --hours 24    # power over time
 omaenergy status              # discovered sensors, database, configuration
+omaenergy config              # show settings
+omaenergy config tariff=0.42  # change the price per kWh, retroactively
 ```
 
 Every subcommand takes `--json`. `status` is the one to paste into a bug report:
@@ -274,29 +290,55 @@ deliberately not used, sample counts, and how many intervals were dropped.
 | `highWattThreshold` | 300 | Urgent colour at or above this many watts |
 | `barLabelMode` | `watts` | `watts` / `todayKwh` / `monthKwh`. Right-click to cycle |
 
-**Backend** — `~/.config/omarchy-energy/config.json`:
+**Backend** — one source of truth, `~/.config/omarchy-energy/config.json`.
+You should not need to hand-edit it; `omaenergy config` validates and writes it
+atomically, and the panel can set the price for you:
+
+```bash
+omaenergy config                            # list everything, with what needs a restart
+omaenergy config tariff=0.42                # your actual price per kWh
+omaenergy config tariff=1444.7 currency=IDR # any currency
+omaenergy config baseline_w=37.5            # after calibrating
+```
 
 | Key | Default | |
 |---|---|---|
+| `tariff` | 0.30 | **Price per kWh. Set this first** — the shipped value is a placeholder, not your tariff. Retroactive |
+| `currency` | `EUR` | ISO code. Picks the symbol and the natural precision: `€0.42`, `Rp 2,041`, `¥180` |
+| `currency_symbol` | auto | Override the symbol if your currency is not in the table, or you simply prefer another glyph |
+| `cost_decimals` | auto | Decimal places for money. `2` where a cent exists, `0` for IDR / JPY / KRW / VND where it does not |
 | `baseline_w` | 32 desktop / 12 laptop | The unmeasurable remainder. **Calibrate this.** Retroactive |
 | `psu_efficiency` | 0.89 | AC→DC loss. Retroactive |
-| `tariff` | 0.30 | Price per kWh. Retroactive |
-| `currency` | `EUR` | Display only |
 | `interval_s` | 10 | Database row interval. Needs a service restart |
 | `gpu_interval_s` | 1.0 | GPU sub-sample rate — this is what sets GPU accuracy |
 | `raw_retention_days` | 30 | How long per-sample rows are kept for charts. The daily rollup is kept forever |
 | `sanity_max_cpu_w` | 1000 | Package draw above this is treated as a counter reset and dropped |
 | `gpu_source` | `auto` | `auto`, `off`, or an explicit hwmon path |
 
-`baseline_w`, `psu_efficiency`, `tariff` and `currency` take effect immediately
-and apply to all history. The rest need
+### Why price changes are retroactive
+
+Everything in the first group — price, currency, baseline, PSU efficiency —
+**applies to your entire history the moment you save it**, with no restart and
+no data migration. That is not a convenience feature; it falls out of the
+storage decision above. Cost was never written into a row, so correcting your
+tariff simply re-derives every number the tool has ever reported.
+
+Practically: you can run the meter for a month without knowing your exact
+tariff, then enter it and immediately get a correct month. And when your
+utility raises the price, you get to choose — set the new one and see the whole
+history repriced, or keep the old one for comparison. Nothing is lost either
+way.
+
+The remaining keys only affect sampling, so they take effect on
 `systemctl --user restart omarchy-energy`.
 
 ---
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
+<p align="center">
+  <img src="docs/architecture.png" alt="Kernel sysfs to sampler daemon to SQLite to CLI to bar widget" width="900">
+</p>
 
 | Path | |
 |---|---|
@@ -448,6 +490,73 @@ Good first contributions:
 
 Bug reports: please include `omaenergy status --json` and
 `omaenergy now --json`, your CPU and GPU model, and whether it is a laptop.
+
+---
+
+## Changelog
+
+`manifest.json`'s `version` is a display string. The marketplace listing is
+pinned to a specific commit SHA, so bumping the version alone publishes
+nothing — see [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+
+### Unreleased — since the first working build
+
+**Added**
+
+- `omaenergy config` — a validated, atomic write path for every setting, so
+  the price per kWh no longer means hand-editing JSON. Also reachable from the
+  panel. `tariff`, `currency`, `baseline_w` and `psu_efficiency` apply to the
+  **whole history** the moment they are saved.
+- Currency handling worth the name: a symbol and natural-precision table, so
+  `EUR` renders `€0.42` and `IDR` renders `Rp 2,041` rather than `0.42E`.
+  Overridable with `currency_symbol` and `cost_decimals`.
+- `measured_share` in the payload and in the panel — the share of the reading
+  that is hardware-measured rather than the baseline estimate. The plugin's
+  central claim was previously invisible in its own UI.
+- GPU sub-sampling at `gpu_interval_s` (default 1 s), independent of the
+  database row interval.
+- `uptime_truncated`, and a `status` report of sensors found but deliberately
+  unused (Intel `psys` / `dram`).
+
+**Fixed** — most of these came out of two independent audits run before any
+release, and they are listed because they explain why numbers moved
+
+- **Mixed units in the live split.** The total and the estimated remainder were
+  at-socket while CPU and GPU were raw DC sensor watts, so the panel's stacked
+  bar did not add up to the number above it — a measured 14.2 W discrepancy.
+  Everything is at-socket now and the parts sum exactly.
+- **The daemon kept recording after losing RAPL.** A re-probe that found no
+  zones returned a zero delta, so rows were written with no CPU energy while
+  tracked time kept advancing: buckets looked complete but were missing the
+  largest measured term. It now refuses to record instead.
+- **Absence of data rendered as zero.** A `no_data` reply still carried
+  `watts: 0`, which the widget presented as a measurement of 0 W. Degraded
+  replies now carry no live numbers at all.
+- **GPU energy bias.** A 10 s trapezoid measured −2.03% at idle and +2.6% under
+  light load against a dense 100 ms reference. 1 s sub-sampling brings it to
+  **−0.39%**.
+- **A counter reset became a 6.5 kW phantom sample.** A reset is arithmetically
+  identical to a wrap; implausible package draw is now discarded, as are
+  suspend-length gaps, and both reduce `coverage` honestly.
+- **Portability, the worst of them.** On an AMD APU the integrated GPU would
+  have been counted twice, since it is already inside the RAPL package figure
+  and amdgpu's own reading on an APU includes the CPU. GPU selection also
+  picked the lowest hwmon index, which sorts `hwmon10` before `hwmon2` and
+  would happily measure a 15 W iGPU while ignoring a 300 W card. Selection is
+  now by power cap, and the APU case is dropped with the reason reported.
+- **Names that overstated the number.** `peak_w` → `max_sample_w` (it is the
+  largest interval *average*), `avg_w` → `avg_w_tracked` (averaged over the
+  time sampled, not the calendar bucket), and the hero now says it is a mean
+  over the last interval rather than an instant.
+- **The kWh constant was wrong by 1000×** (`3.6e15` instead of `3.6e12` µJ per
+  kWh). Because only raw joules are stored, fixing it corrected all existing
+  history with no data loss.
+- **The widget froze instead of degrading.** Health was judged from process
+  exit codes, but a command that cannot be executed produces none, so a dead
+  backend left the last good reading on the bar looking live. Health is now a
+  freshness deadline, which also covers hung polls and a stopped daemon.
+- Bucket spans are built with per-instant UTC offsets, so a DST transition day
+  is 23 or 25 hours long and does not read as partially tracked.
 
 ---
 
