@@ -212,6 +212,9 @@ own rule and a reason it is still read-only for `wheel`.
 
 There is no enforced commit convention in this ecosystem. Please still:
 
+- **open it against `dev`, not `main`.** `main` is what every installed copy
+  fast-forwards to on `omarchy plugin update`, so it only moves at release
+  time — see [Release](#release--marketplace)
 - one logical change per PR
 - an explanation of *why*, not only what
 - which CPU/GPU the change was tested on, and desktop vs laptop
@@ -233,6 +236,58 @@ churn in `preview.png` is a visual lie about what that SHA draws.
 The listing on plugins.omarchy.org is bound to a specific **40-character
 commit SHA**, not to `manifest.json`'s `version`. Bumping the version alone
 does nothing.
+
+### `main` is the release branch, because tags cannot be
+
+The obvious instinct is to publish releases and let the marketplace serve a
+tag. Omarchy's installer cannot do that. From its source:
+
+```sh
+# omarchy-plugin-add
+git clone -- "$url" "$stage"                     # no --branch, no ref, no tag
+
+# omarchy-plugin-update
+git -C "$dir" fetch --quiet origin HEAD
+git -C "$dir" merge --ff-only FETCH_HEAD
+```
+
+Both follow the repository's **default branch HEAD**. A tag or a GitHub Release
+changes nothing about what a user receives, and the marketplace's pinned SHA
+only governs what was *reviewed*, not what gets installed — the listing and the
+installation are two different trust boundaries.
+
+So the only real lever is what the default branch points at, and the policy
+follows from that:
+
+- **`dev` is where work lands.** Branch from it, PR into it.
+- **`main` only ever advances at release time.** Anything on `main` is live for
+  every user the moment they run `omarchy plugin update`.
+
+Releasing:
+
+```sh
+# on dev: bump manifest.json "version", add the Changelog entry, commit
+git switch main
+git merge --ff-only dev        # keeps main linear; see the warning below
+git tag -a v1.2.0 -m 'v1.2.0'
+git push origin main --follow-tags
+```
+
+Then open the marketplace verification issue with the new `main` SHA.
+
+**Never force-push or rebase `main`.** `omarchy-plugin-update` merges with
+`--ff-only`, so a rewritten history is not a fast-forward from what users have
+checked out: their update fails, the script resets them to `ORIG_HEAD`, and they
+are stuck on an old commit until they delete and re-add the plugin. Rewrite
+`dev` freely; treat `main` as append-only.
+
+`--ff-only` in the release merge is for our own hygiene, not the user's: it
+keeps `main` a linear prefix of `dev` so the SHA sent to the marketplace is
+exactly a commit that was reviewed on `dev`.
+
+Bumping `version` in `manifest.json` is still worth doing — it is what the
+marketplace and `omarchy plugin list` display — but it publishes nothing on its
+own.
 
 To publish a newer commit, open a **Plugin verification** issue on
 [omacom/omarchy-plugin-marketplace](https://github.com/omacom/omarchy-plugin-marketplace)

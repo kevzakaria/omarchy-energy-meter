@@ -545,9 +545,13 @@ Bug reports: please include `omaenergy status --json` and
 
 ## Changelog
 
-`manifest.json`'s `version` is a display string. The marketplace listing is
-pinned to a specific commit SHA, so bumping the version alone publishes
-nothing — see [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+`main` is the release branch: development happens on `dev`, and `main` only
+moves when a version is cut. That is not a style preference — `omarchy plugin
+add` clones the default branch and `omarchy plugin update` fast-forwards to it,
+neither of which can be pointed at a tag, so a stable default branch is the
+only way to keep unreleased work out of your install. `manifest.json`'s
+`version` is a display string and publishes nothing on its own. See
+[CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
 ### Unreleased — since the first working build
 
