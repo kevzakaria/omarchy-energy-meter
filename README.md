@@ -182,6 +182,12 @@ The pane is also reachable without the mouse, so you can bind it:
 omarchy-shell io.github.kevzakaria.energy-meter settings
 ```
 
+Inside the pane, `Enter` saves and `Escape` closes, from a field or from the
+pane itself. A save confirms what it wrote: a price or a baseline shows the
+figure it just moved, since those apply to the whole history and the point is
+that you can watch the number change; a sampling key tells you it needs the
+restart button instead.
+
 ---
 
 ## What is measured and what is estimated
@@ -586,8 +592,24 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
 ### Unreleased
 
+**Added**
+
+- Saving in the settings pane now confirms itself, and says what changed. A
+  price or baseline reports the figure it just moved (`today now reads 1.74
+  kWh / €0.52`, at the shipped `0.30`), because a retroactive setting is only
+  believable if you can watch the number move; a sampling key says it needs
+  the restart instead. Clicking Save with nothing edited says so rather than
+  doing nothing.
+- Enter saves while the settings pane is open. It already saved from inside a
+  field; with no field focused the key did nothing, so the pane could not be
+  driven without a pointer at all.
+
 **Fixed**
 
+- A successful save produced no visible change whatsoever. Only the failure
+  path had a message, and because the pane covers the panel body, the
+  recomputed cost was hidden behind it: a save that worked looked exactly like
+  a dead button.
 - `install.sh` blamed the wrong thing when the RAPL counter came out
   unreadable. It said the udev rule was missing even when the rule was already
   installed and the real cause was group membership. It now distinguishes the

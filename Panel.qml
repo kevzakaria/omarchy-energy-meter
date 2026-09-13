@@ -92,11 +92,26 @@ Panel {
   property var configErrors: ({})
   property string configSaveError: ""
   property bool restartRequired: false
+  // What the last save wrote, and whether to still be saying so. A successful
+  // save used to change nothing on screen: the error path had a message, the
+  // success path had none, and because this pane covers the panel body the
+  // recomputed cost was not visible either. So a save looked identical to a
+  // dead button.
+  property string configSavedKeys: ""
+  property bool configSavedShown: false
+  // Whether the last save moved existing figures or only future sampling. The
+  // two deserve different sentences: one is already true, the other is a
+  // promise pending a restart.
+  property bool retroactiveSave: false
+  readonly property var retroactiveKeys: [
+    "tariff", "currency", "currency_symbol", "cost_decimals",
+    "baseline_w", "psu_efficiency"
+  ]
   readonly property bool configFieldFocused: configFocusCount > 0
   property int configDraftGen: 0
 
   // Currencies are fetched once per shell session, the first time the
-  // settings pane opens, not at widget construction and not on the
+  // settings pane opens — not at widget construction and not on the
   // `now` poll. An empty or failed list falls back to the free-text
   // field so a broken picker cannot lock the user out.
   property var currencyOptions: []
@@ -364,7 +379,7 @@ Panel {
     return t
   }
 
-  readonly property string accuracyNote: "CPU is a hardware energy counter; GPU is an integrated estimate. Baseline and PSU efficiency stand in for the rest, so the total is ±15-20% of a wall meter. Trends are accurate."
+  readonly property string accuracyNote: "CPU is a hardware energy counter; GPU is an integrated estimate. Baseline and PSU efficiency stand in for the rest, so the total is ±15–20% of a wall meter. Trends are accurate."
 
   readonly property var configMoneyFields: [
     { key: "tariff", label: "Tariff", unit: "/kWh", blurb: "price per kWh", kind: "number" },
@@ -535,8 +550,21 @@ Panel {
     }
     configErrors = errors
     configSaveError = ""
+    configSavedShown = false
     if (hasErr) return
-    if (pairs.length === 0) return
+    if (pairs.length === 0) {
+      // Clicking Save with nothing changed used to be a silent no-op, which is
+      // the same non-event as a broken button. Say so instead.
+      configSavedKeys = ""
+      configSavedShown = true
+      savedNoteTimer.restart()
+      return
+    }
+    // Keys only, for the confirmation. Values are already on screen in their
+    // fields, and a tariff does not need repeating back.
+    var keys = []
+    for (var k = 0; k < pairs.length; k++) keys.push(pairs[k].split("=")[0])
+    configSavedKeys = keys.join(", ")
     configSaving = true
     restartRequired = false
     // argv array, not a concatenated shell string: a currency code or
@@ -571,11 +599,25 @@ Panel {
     configSaveError = ""
     var data = parseJsonObject(saveConfigOut.text)
     restartRequired = !!(data && data.restart_required)
+    // Name the keys the backend says it wrote, not the ones we sent. They are
+    // the same set today, and when they are not, the file is the fact.
+    var written = (data && data.updated && typeof data.updated === "object")
+      ? Object.keys(data.updated) : []
+    if (written.length > 0) configSavedKeys = written.join(", ")
+    retroactiveSave = false
+    for (var r = 0; r < written.length; r++) {
+      if (retroactiveKeys.indexOf(written[r]) !== -1) {
+        retroactiveSave = true
+        break
+      }
+    }
     // Retroactive keys re-derive every stored day, so refresh now and
     // the open breakdown together rather than waiting for the poll.
     pollNow()
     refreshPanelData()
     loadConfig()
+    configSavedShown = true
+    savedNoteTimer.restart()
   }
 
   function restartSampler() {
@@ -727,7 +769,7 @@ Panel {
     if (data.baseline_w !== undefined) baselineW = num(data.baseline_w, baselineW)
     if (data.psu_efficiency !== undefined) psuEfficiency = num(data.psu_efficiency, psuEfficiency)
     // Absence of `watts` (or an explicit no_data status) is not a reading of
-    // zero: it is no sample. Leave last live numbers untouched but stop
+    // zero — it is no sample. Leave last live numbers untouched but stop
     // presenting them.
     if (nowStatus === "no_data" || data.watts === undefined) {
       hasSample = false
@@ -838,6 +880,15 @@ Panel {
     running: root.opened
     repeat: true
     onTriggered: root.refreshPanelData()
+  }
+
+  // The confirmation is transient on purpose. A permanent "Saved" banner stops
+  // meaning anything after the second glance, and the settings pane is a place
+  // people pass through rather than watch.
+  Timer {
+    id: savedNoteTimer
+    interval: 6000
+    onTriggered: root.configSavedShown = false
   }
 
   Process {
@@ -1006,7 +1057,10 @@ Panel {
             Math.max(0, panelFlick.contentHeight - panelFlick.height))
       }
       onActivateRequested: {
-        if (!root.configOpen) root.refreshPanelData()
+        // Enter inside a field already saves. This is the same key with the
+        // pane open and no field focused, which otherwise did nothing at all.
+        if (root.configOpen) root.commitConfig()
+        else root.refreshPanelData()
       }
       onCloseRequested: {
         if (root.configOpen) root.closeConfig()
@@ -1364,6 +1418,36 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
+            // A confirmation that proves the value is live, not just written.
+            // "Saved" alone asks to be trusted; naming the figure the save just
+            // moved lets the user check it. The whole point of a retroactive
+            // tariff is that today's cost changes the instant it lands, and
+            // this pane is covering the place that number is normally shown.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.configSavedShown && root.configSaveError === ""
+              width: parent.width
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              text: {
+                if (root.configSavedKeys === "")
+                  return "Nothing to save: no value changed."
+                var head = "Saved " + root.configSavedKeys + "."
+                // One save can touch both kinds of key, so the clauses are
+                // additive rather than exclusive. The restart clause follows
+                // the button's own condition: a sentence pointing at a button
+                // that is not rendered is worse than no sentence.
+                if (root.retroactiveSave)
+                  head += " Applied to the whole history: today now reads "
+                    + root.formatKwh(root.todayKwh) + " / " + root.formatCost(root.todayCost) + "."
+                if (root.restartRequired)
+                  head += " Sampling changes need the restart below."
+                return head
+              }
+            }
+
             Row {
               spacing: Style.space(8)
 
@@ -1526,7 +1610,7 @@ Panel {
       textFormat: Text.PlainText
       visible: cfg.usePicker
       width: parent.width
-      text: cfg.customOpen ? "Custom code (2-5 letters), then Save." : "Not listed? Custom code: any 2-5 letter code."
+      text: cfg.customOpen ? "Custom code (2–5 letters), then Save." : "Not listed? Custom code — any 2–5 letter code."
       color: root.muted
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -1627,7 +1711,7 @@ Panel {
     property real gpuW: 0
     property real restW: 0
     property real watts: 0
-    // Scale to the hero total, not to the sum of segments. The three parts
+    // Scale to the hero total, not to the sum of segments — the three parts
     // now add up to `watts` at the socket, so the bar fills without a fudge.
     readonly property real scale: Math.max(0, watts)
     implicitHeight: Math.max(Style.space(8), Math.round(Style.spacing.controlHeight * 0.28))
