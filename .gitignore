@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Personal energy databases — never commit
+*.db
+*.db-wal
+*.db-shm
+
+# Editor
+*~
+*.swp
+*.swo
+*.swn
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.directory

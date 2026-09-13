@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.kevzakaria.energy-meter",
+  "name": "Energy Meter",
+  "version": "1.0.0",
+  "author": "Kevin Zakaria",
+  "license": "MIT",
+  "homepage": "https://github.com/kevzakaria/omarchy-energy-meter",
+  "description": "Live at-socket power draw on the bar, and a panel with energy and cost per day, week, month, and year. CPU energy comes from RAPL hardware counters and GPU power from amdgpu; the rest of the machine is a calibratable estimate, and the split between measured and estimated is always shown.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Energy Meter",
+    "description": "Live watts on the bar; click for a 24h sparkline and energy broken down by day, week, month, and year.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "highWattThreshold": 300,
+      "barLabelMode": "watts"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "description": "How often the bar polls the backend. This does not change how often energy is sampled; that is interval_s in the backend config.",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "highWattThreshold",
+        "type": "integer",
+        "label": "High-draw threshold (watts)",
+        "description": "Bar label uses the urgent colour when live draw is at or above this.",
+        "min": 50,
+        "max": 2000,
+        "step": 10,
+        "defaultValue": 300
+      },
+      {
+        "key": "barLabelMode",
+        "type": "enum",
+        "label": "Bar label",
+        "options": ["watts", "todayKwh", "monthKwh"],
+        "defaultValue": "watts",
+        "description": "What the bar shows. Right-click the widget to cycle. watts = live draw, todayKwh = today's energy, monthKwh = month to date."
+      }
+    ]
+  }
+}

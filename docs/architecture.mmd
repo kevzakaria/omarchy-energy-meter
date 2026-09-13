@@ -1,0 +1,48 @@
+---
+config:
+  theme: dark
+  themeVariables:
+    darkMode: true
+    primaryTextColor: "#e6edf3"
+    lineColor: "#8b949e"
+    clusterBkg: "#161b22"
+    clusterBorder: "#30363d"
+    titleColor: "#e6edf3"
+---
+flowchart LR
+  classDef measured fill:#0d3b2e,stroke:#3fb950,color:#e6edf3
+  classDef estimated fill:#3d2a00,stroke:#d29922,color:#e6edf3
+  classDef store fill:#1c2128,stroke:#8b949e,color:#e6edf3
+  classDef runtime fill:#12233f,stroke:#388bfd,color:#e6edf3
+
+  subgraph kernel ["Kernel sysfs"]
+    RAPL["RAPL energy_uj"]
+    GPU["amdgpu hwmon"]
+  end
+
+  UDEV["udev rule<br/>wheel read on RAPL"]
+  DAEMON["sampler daemon<br/>systemd user unit"]
+
+  subgraph db ["SQLite"]
+    SAMPLES["samples<br/>raw uJ, 30-day"]
+    DAILY["daily rollup<br/>permanent"]
+  end
+
+  EST["baseline_w<br/>psu_efficiency<br/>tariff"]
+  CLI["omaenergy CLI"]
+  UI["bar widget + panel"]
+
+  UDEV -.-> RAPL
+  RAPL --> DAEMON
+  GPU --> DAEMON
+  DAEMON --> SAMPLES
+  DAEMON --> DAILY
+  SAMPLES --> CLI
+  DAILY --> CLI
+  EST -.->|"query time only"| CLI
+  CLI --> UI
+
+  class RAPL,GPU measured
+  class EST estimated
+  class SAMPLES,DAILY store
+  class DAEMON,CLI,UI,UDEV runtime

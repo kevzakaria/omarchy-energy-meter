@@ -1,0 +1,47 @@
+# User unit: samples on behalf of one user's session and writes SQLite into
+# that user's home. Once the udev rule makes RAPL energy_uj readable by wheel,
+# no root is needed at runtime.
+
+[Unit]
+Description=Omarchy energy meter (RAPL + amdgpu sampler)
+# The local path used during development does not exist after a plugin install,
+# so point at the documentation that always does.
+Documentation=https://github.com/kevzakaria/omarchy-energy-meter
+# The sampler integrates power over wall-clock intervals, so it wants to be
+# running whenever the machine is, not only inside a graphical session.
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omaenergy daemon
+Restart=always
+RestartSec=5
+# A restart loses at most one interval; it must never lose the rollup, so the
+# daemon is stopped with SIGTERM and allowed to finish its current write.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Sampling is two sysfs reads and one SQLite write every 10s. Keep it out of
+# the way of anything that matters.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# It reads two sysfs attributes and writes one SQLite file. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/omarchy-energy %h/.config/omarchy-energy
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=default.target

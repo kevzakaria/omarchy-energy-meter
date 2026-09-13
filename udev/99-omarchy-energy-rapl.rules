@@ -1,0 +1,6 @@
+# Grant the wheel group read-only access to RAPL energy_uj.
+#
+# Upstream keeps this sysfs file root-only because of CVE-2020-8694 (PLATYPUS,
+# a power side channel that can leak cryptographic key material at high sample
+# rates). The rule confers no privilege the wheel group does not already hold.
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", RUN+="/usr/bin/chgrp wheel /sys%p/energy_uj", RUN+="/usr/bin/chmod 0440 /sys%p/energy_uj"

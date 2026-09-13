@@ -1,0 +1,958 @@
+#!/usr/bin/python3
+"""Energy accounting for this machine: sample hardware power counters, keep a
+permanent daily rollup, and report consumption per day / week / month / year.
+
+WHAT IS MEASURED AND WHAT IS NOT
+--------------------------------
+Two terms are read from hardware:
+
+  CPU/SoC   RAPL `package-*` energy counters (`/sys/class/powercap/*/energy_uj`).
+            A true accumulating energy counter, so its integral is exact at any
+            sample interval. On AMD this is MSR C001_029B, the whole socket:
+            core complexes plus the I/O die. It does NOT include DIMMs, the
+            discrete GPU, or the chipset.
+  GPU       amdgpu hwmon `power1_average` (or `power1_input` where that is the
+            only one exposed). This is *not* an energy counter: it is a
+            firmware-filtered power estimate, reported in whole watts, which
+            must be integrated by sampling. Its integral is therefore
+            approximate; see GPU SAMPLING below.
+
+Everything else in the box -- DRAM, NVMe, SATA, fans, chipset, USB -- has no
+power sensor on a typical desktop board, and the PSU's AC/DC conversion loss is
+not observable from inside the machine at all. Those are configuration
+constants (`baseline_w`, `psu_efficiency`), i.e. estimates. Expect the reported
+total to sit within roughly +/-15-20% of a wall meter, while *trends* are far
+better than that, because the part that varies with load is the part that is
+genuinely measured.
+
+The estimates are deliberately NOT baked into stored rows. The database holds
+only measured microjoules plus the tracked duration, and the constants are
+applied at query time -- so recalibrating `baseline_w` or `psu_efficiency`, or
+correcting `tariff`, fixes the ENTIRE history rather than only future samples.
+
+WHY THE RAPL `core` ZONE IS IGNORED
+-----------------------------------
+On Zen, the `core` powercap zone is fed by MSR_AMD_CORE_ENERGY_STATUS, which is
+per-core, and powercap reads it on the package's lead CPU only. So the sysfs
+`core` file is ONE physical core, not a package aggregate. Measured on a 5950X:
+pinning a busy loop to cpu0 raised it by 6.6 W while pinning to cpu8 did not
+move it at all, and with 32 threads loaded it read 5.8 W against a package
+reading of 130.2 W. It is a subset of `package-0`, so adding the two would
+double count that core. Only `package-*` zones are summed.
+
+GPU SAMPLING
+------------
+Because the GPU term is a power estimate rather than a counter, its energy is
+obtained by quadrature, which is only as good as the sample rate. Measured
+against a dense 100 ms reference trace on this machine, a trapezoid rule at a
+10 s spacing was off by -2.0% at idle and +2.6% under a light load, while 1 s
+spacing was off by -0.3%. Short bursts can alias much worse than that.
+The daemon therefore sub-samples the GPU at `gpu_interval_s` (default 1 s) and
+integrates those, while still writing one database row per `interval_s`. The
+CPU term needs none of this: it is a counter, so a delta over the whole
+interval is exact regardless of spacing.
+
+SCOPE
+-----
+Supported and verified: AMD or Intel CPUs exposing RAPL `package-*`, plus an
+optional discrete AMD GPU. Detected but deliberately unused: the Intel `psys`
+and `dram` zones (see `omaenergy status`). Using `psys` would be strictly
+better than package-plus-estimate, and `dram` would shrink the estimated
+remainder, but neither could be verified on real hardware here, and this tool
+would rather report a source as unused than integrate a number whose semantics
+it has not checked.
+
+On an AMD APU the integrated GPU is already inside the RAPL package figure, and
+amdgpu's `power1_average` on an APU is documented to include the CPU. Adding
+both would double count nearly the whole machine, so on an APU the GPU term is
+dropped and the reason is reported.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "omarchy-energy"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy-energy"
+DB_PATH = STATE_DIR / "energy.db"
+CONFIG_PATH = CONFIG_DIR / "config.json"
+
+POWERCAP_ROOT = Path("/sys/class/powercap")
+HWMON_ROOT = Path("/sys/class/hwmon")
+DMI_CHASSIS = Path("/sys/class/dmi/id/chassis_type")
+
+# SMBIOS chassis types that mean "portable". 8 portable, 9 laptop, 10 notebook,
+# 11 hand held, 14 sub notebook, 30 tablet, 31 convertible, 32 detachable.
+PORTABLE_CHASSIS = {8, 9, 10, 11, 14, 30, 31, 32}
+
+UJ_PER_KWH = 3.6e12  # 1 kWh = 1000 W * 3600 s = 3.6e6 J, and 1 J = 1e6 uJ.
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS samples (
+  ts      INTEGER PRIMARY KEY,  -- unix milliseconds at end of interval
+  dt_ms   INTEGER NOT NULL,
+  cpu_uj  INTEGER NOT NULL,     -- measured, RAPL package sum
+  gpu_uj  INTEGER NOT NULL      -- measured, amdgpu power integrated at gpu_interval_s
+);
+CREATE TABLE IF NOT EXISTS daily (
+  day        TEXT PRIMARY KEY,  -- YYYY-MM-DD, local time
+  cpu_uj     INTEGER NOT NULL DEFAULT 0,
+  gpu_uj     INTEGER NOT NULL DEFAULT 0,
+  tracked_ms INTEGER NOT NULL DEFAULT 0,
+  -- Largest single-interval AVERAGE measured DC draw, in milliwatts. This is
+  -- not an instantaneous peak: a spike shorter than one interval is averaged
+  -- away. Reported as `max_sample_w`, never as "peak".
+  peak_mw    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+"""
+
+
+# --------------------------------------------------------------------------
+# configuration
+# --------------------------------------------------------------------------
+
+
+def is_portable() -> bool:
+    try:
+        return int(DMI_CHASSIS.read_text().strip()) in PORTABLE_CHASSIS
+    except (OSError, ValueError):
+        return False
+
+
+def default_baseline_w() -> float:
+    # The unmeasurable remainder is a different animal on a laptop (one SO-DIMM
+    # pair, one M.2, a panel and a radio) than on a desktop (four DIMM slots,
+    # several drives, case fans, a chipset). Shipping the desktop figure to
+    # laptops would be a large silent error, so the default follows the chassis.
+    return 12.0 if is_portable() else 32.0
+
+
+def defaults() -> dict:
+    return {
+        "baseline_w": default_baseline_w(),
+        # PSU AC->DC efficiency. 80+ Gold sits near 0.90 at typical desktop
+        # load and worse at very light load. On a laptop the equivalent loss is
+        # the AC adapter's.
+        "psu_efficiency": 0.89,
+        "tariff": 0.30,
+        "currency": "EUR",
+        "interval_s": 10,
+        # GPU power is integrated by quadrature, so this is the rate that
+        # actually determines GPU energy accuracy. 1 s measured -0.3% against a
+        # dense reference; 10 s measured -2.0%.
+        "gpu_interval_s": 1.0,
+        # Raw per-sample rows exist only to draw charts; the daily rollup is
+        # what is kept forever.
+        "raw_retention_days": 30,
+        # A RAPL counter reset is indistinguishable from a wrap by arithmetic
+        # alone, and a reset yields a delta of nearly the whole counter range --
+        # about 6.5 kW over a 10 s interval on this hardware. Any interval
+        # implying more package power than this is discarded as a reset.
+        "sanity_max_cpu_w": 1000.0,
+        # "auto" | "off" | an explicit hwmon path. "off" is the honest setting
+        # for a machine whose GPU power this tool cannot read.
+        "gpu_source": "auto",
+    }
+
+
+def load_config() -> dict:
+    cfg = defaults()
+    try:
+        cfg.update(json.loads(CONFIG_PATH.read_text()))
+    except FileNotFoundError:
+        pass
+    except (ValueError, OSError) as exc:
+        print(f"omaenergy: ignoring unreadable {CONFIG_PATH}: {exc}", file=sys.stderr)
+    return cfg
+
+
+def write_default_config() -> None:
+    if CONFIG_PATH.exists():
+        return
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(defaults(), indent=2) + "\n")
+
+
+# --------------------------------------------------------------------------
+# sensors
+# --------------------------------------------------------------------------
+
+
+def cpu_has_integrated_gpu() -> bool:
+    """True when the CPU is an AMD APU, i.e. its GPU is inside RAPL package.
+
+    AMD names APUs with their graphics in the model string ("AMD Ryzen 7 7840U
+    w/ Radeon 780M Graphics"), while desktop CPUs like the 5950X do not mention
+    Radeon at all. That string is the cheapest reliable signal available without
+    a PCI topology walk.
+    """
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                return "radeon" in line.lower()
+    except OSError:
+        pass
+    return False
+
+
+class RaplSensor:
+    """Sum of every `package-*` powercap zone, with wrap handling.
+
+    `energy_uj` is a free-running counter that wraps at `max_energy_range_uj`,
+    so a delta is taken modulo that range. A wrap is arithmetically
+    indistinguishable from a counter reset, which is why the caller also applies
+    a plausibility ceiling to the implied power.
+    """
+
+    def __init__(self) -> None:
+        self.zones: list[tuple[Path, int]] = []
+        self.unused: list[tuple[str, str]] = []
+        for zone in sorted(POWERCAP_ROOT.glob("*:*")):
+            try:
+                name = zone.joinpath("name").read_text().strip()
+            except OSError:
+                continue
+            if not name.startswith("package-"):
+                # `psys` would be a better total than package+baseline, and
+                # `dram` would shrink the estimated remainder. Neither could be
+                # verified on real hardware, so they are surfaced as unused
+                # rather than silently integrated. `core` is a per-core subset
+                # of package; see the module docstring.
+                if name in ("psys", "dram"):
+                    self.unused.append((name, str(zone)))
+                continue
+            try:
+                rng = int(zone.joinpath("max_energy_range_uj").read_text())
+                zone.joinpath("energy_uj").read_text()  # probe readability now
+            except (OSError, ValueError):
+                continue
+            self.zones.append((zone / "energy_uj", rng))
+        self._prev: list[int] | None = None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.zones)
+
+    def delta_uj(self) -> int | None:
+        """Energy since the previous call, or None if no delta can be formed."""
+        if not self.zones:
+            # Never return 0 here. A zero delta is indistinguishable from "the
+            # CPU used no energy", which would let the daemon record intervals
+            # that silently omit CPU draw while still counting as tracked time.
+            return None
+        cur = [int(path.read_text()) for path, _ in self.zones]
+        prev, self._prev = self._prev, cur
+        if prev is None or len(prev) != len(cur):
+            return None
+        return sum((b - a) % rng for (_, rng), a, b in zip(self.zones, prev, cur))
+
+    def reset(self) -> None:
+        self._prev = None
+
+
+class GpuSensor:
+    """An amdgpu power reading, chosen deterministically.
+
+    Selection is by the highest `power1_cap`, never by hwmon index: hwmonN
+    numbering follows driver probe order, it changes between boots, and it sorts
+    lexicographically so "hwmon10" precedes "hwmon2". On a machine with an
+    integrated and a discrete GPU, index order would happily pick the 15 W iGPU
+    and silently ignore a 300 W card.
+    """
+
+    def __init__(self, cfg: dict) -> None:
+        self.path: Path | None = None
+        self.label = ""
+        self.cap_w = 0.0
+        self.skipped_reason = ""
+        self.candidates: list[dict] = []
+
+        mode = str(cfg.get("gpu_source", "auto"))
+        if mode == "off":
+            self.skipped_reason = "disabled by config (gpu_source: off)"
+            return
+
+        for hwmon in sorted(HWMON_ROOT.glob("hwmon*")):
+            try:
+                if hwmon.joinpath("name").read_text().strip() != "amdgpu":
+                    continue
+            except OSError:
+                continue
+            # `power1_average` is the filtered SoC/board figure; `power1_input`
+            # is the instantaneous one and is the only field some cards expose.
+            attr = next((a for a in ("power1_average", "power1_input")
+                         if self._readable(hwmon / a)), None)
+            if attr is None:
+                continue
+            cap = self._number(hwmon / "power1_cap")
+            self.candidates.append({
+                "hwmon": str(hwmon),
+                "attr": attr,
+                "label": self._text(hwmon / "power1_label"),
+                "cap_w": round(cap / 1e6, 1) if cap else 0.0,
+            })
+
+        if mode not in ("auto", "off"):
+            chosen = next((c for c in self.candidates if c["hwmon"] == mode
+                           or c["hwmon"] + "/" + c["attr"] == mode), None)
+            if chosen is None:
+                self.skipped_reason = f"configured gpu_source not found: {mode}"
+                return
+        elif not self.candidates:
+            self.skipped_reason = "no amdgpu power sensor found"
+            return
+        else:
+            chosen = max(self.candidates, key=lambda c: c["cap_w"])
+            if cpu_has_integrated_gpu() and len(self.candidates) == 1:
+                # The only GPU is the one inside the CPU package, so RAPL
+                # already counted it, and amdgpu's own reading on an APU
+                # includes the CPU as well. Counting it would double the
+                # machine.
+                self.skipped_reason = (
+                    "integrated GPU on an AMD APU: already included in the RAPL "
+                    "package figure, so counting it again would double count")
+                return
+
+        self.path = Path(chosen["hwmon"]) / chosen["attr"]
+        self.label = chosen["label"]
+        self.cap_w = chosen["cap_w"]
+
+    @staticmethod
+    def _readable(path: Path) -> bool:
+        try:
+            int(path.read_text())
+            return True
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _number(path: Path) -> float:
+        try:
+            return float(int(path.read_text()))
+        except (OSError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _text(path: Path) -> str:
+        try:
+            return path.read_text().strip()
+        except OSError:
+            return ""
+
+    @property
+    def available(self) -> bool:
+        return self.path is not None
+
+    def watts(self) -> float:
+        if self.path is None:
+            return 0.0
+        try:
+            return int(self.path.read_text()) / 1e6
+        except (OSError, ValueError):
+            return 0.0
+
+
+def describe_sources(cfg: dict) -> dict:
+    rapl, gpu = RaplSensor(), GpuSensor(cfg)
+    return {
+        "cpu_zones": [str(p) for p, _ in rapl.zones],
+        "cpu_available": rapl.available,
+        "gpu_sensor": str(gpu.path) if gpu.available else None,
+        "gpu_label": gpu.label or None,
+        "gpu_cap_w": gpu.cap_w or None,
+        "gpu_candidates": gpu.candidates,
+        "gpu_skipped": gpu.skipped_reason or None,
+        "unused_zones": [{"name": n, "path": p} for n, p in rapl.unused],
+        "is_apu": cpu_has_integrated_gpu(),
+        "chassis": "portable" if is_portable() else "desktop-or-other",
+    }
+
+
+# --------------------------------------------------------------------------
+# storage
+# --------------------------------------------------------------------------
+
+
+def connect(read_only: bool = False) -> sqlite3.Connection:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if read_only and DB_PATH.exists():
+        # A reporting command must never be able to create or migrate the
+        # database the daemon owns, nor take a write lock while the daemon is
+        # mid-interval.
+        db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=10.0)
+        db.execute("PRAGMA busy_timeout = 10000")
+        return db
+    db = sqlite3.connect(DB_PATH, timeout=10.0)
+    db.execute("PRAGMA busy_timeout = 10000")
+    db.execute("PRAGMA journal_mode = WAL")  # readers never block the writer
+    db.execute("PRAGMA synchronous = NORMAL")
+    db.executescript(SCHEMA)
+    db.commit()
+    return db
+
+
+def meta_get(db: sqlite3.Connection, key: str, fallback: str | None = None) -> str | None:
+    try:
+        row = db.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+    except sqlite3.Error:
+        return fallback
+    return row[0] if row else fallback
+
+
+def meta_set(db: sqlite3.Connection, key: str, value: object) -> None:
+    db.execute("INSERT INTO meta(k, v) VALUES(?, ?) "
+               "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (key, str(value)))
+
+
+# --------------------------------------------------------------------------
+# daemon
+# --------------------------------------------------------------------------
+
+
+def run_daemon(args: argparse.Namespace) -> int:
+    write_default_config()
+    cfg = load_config()
+    interval = max(2.0, float(cfg["interval_s"]))
+    gpu_interval = max(0.2, min(float(cfg["gpu_interval_s"]), interval))
+    sanity_max_cpu_w = float(cfg["sanity_max_cpu_w"])
+    # An interval longer than this is a suspend, a stall, or a clock jump. The
+    # counter cannot be trusted across it, so the interval is dropped rather
+    # than recorded as a guess; that shows up honestly as reduced coverage.
+    max_interval = max(interval * 4, 60.0)
+
+    rapl = RaplSensor()
+    gpu = GpuSensor(cfg)
+
+    if not rapl.available:
+        print("omaenergy: no readable RAPL package zone. Install the udev rule "
+              "(see README) and make sure you are in the 'wheel' group. "
+              "Refusing to record samples with no CPU energy.", file=sys.stderr)
+        return 1
+    if gpu.available:
+        print(f"omaenergy: GPU source {gpu.path} (label {gpu.label or '?'}, "
+              f"cap {gpu.cap_w or '?'} W)", file=sys.stderr)
+    else:
+        print(f"omaenergy: no GPU term: {gpu.skipped_reason}. GPU draw will "
+              f"read 0 and is not included in totals.", file=sys.stderr)
+
+    db = connect()
+    meta_set(db, "schema_version", 1)
+    meta_set(db, "interval_s", interval)          # the EFFECTIVE interval, so
+    meta_set(db, "gpu_interval_s", gpu_interval)  # readers judge staleness
+    meta_set(db, "daemon_started_ms", int(time.time() * 1000))
+    meta_set(db, "gpu_source", str(gpu.path) if gpu.available else "")
+    meta_set(db, "gpu_skipped", gpu.skipped_reason)
+    db.commit()
+
+    rapl.delta_uj()  # prime the counter; the first delta is meaningless
+    prev_gpu_w = gpu.watts()
+    dropped = int(meta_get(db, "dropped_intervals", "0") or 0)
+    last_prune = 0.0
+
+    while True:
+        # --- integrate the GPU across the interval -----------------------
+        # The CPU term is a counter and needs only two reads, but the GPU term
+        # is a power estimate, so it is sampled `gpu_interval` apart and
+        # trapezoid-integrated. A 10 s trapezoid measured -2.0% against a dense
+        # reference on this hardware; 1 s measured -0.3%.
+        span_start = time.monotonic()
+        deadline = span_start + interval
+        sub_prev_t = span_start
+        gpu_uj_acc = 0.0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(gpu_interval, remaining))
+            now_mono = time.monotonic()
+            w = gpu.watts()
+            gpu_uj_acc += (prev_gpu_w + w) / 2.0 * (now_mono - sub_prev_t) * 1e6
+            prev_gpu_w, sub_prev_t = w, now_mono
+
+        dt = sub_prev_t - span_start
+
+        # --- read the CPU counter over exactly that span -----------------
+        try:
+            cpu_uj = rapl.delta_uj()
+        except OSError as exc:
+            print(f"omaenergy: RAPL read failed ({exc}); re-probing", file=sys.stderr)
+            rapl = RaplSensor()
+            if not rapl.available:
+                # Continuing here would write rows with no CPU energy while
+                # still advancing tracked time, making later buckets look
+                # complete when they are missing the largest measured term.
+                print("omaenergy: RAPL is no longer readable; exiting rather "
+                      "than recording samples without CPU energy.", file=sys.stderr)
+                return 1
+            rapl.delta_uj()
+            prev_gpu_w = gpu.watts()
+            dropped += 1
+            with db:
+                meta_set(db, "dropped_intervals", dropped)
+            continue
+
+        if cpu_uj is None:
+            continue
+
+        drop_reason = ""
+        if dt <= 0 or dt > max_interval:
+            drop_reason = f"{dt:.0f}s interval (suspend, stall or clock jump)"
+        else:
+            implied_w = cpu_uj / dt / 1e6
+            if implied_w > sanity_max_cpu_w:
+                # A counter reset reads as a delta of nearly the whole range.
+                drop_reason = (f"implausible {implied_w:.0f} W package draw "
+                               f"(counter reset, not a wrap)")
+
+        if drop_reason:
+            dropped += 1
+            print(f"omaenergy: dropped {drop_reason}; {dropped} dropped so far",
+                  file=sys.stderr)
+            rapl.reset()
+            rapl.delta_uj()
+            # The next kept interval must not trapezoid against a vertex from
+            # before the hole.
+            prev_gpu_w = gpu.watts()
+            with db:
+                meta_set(db, "dropped_intervals", dropped)
+            continue
+
+        gpu_uj = int(gpu_uj_acc)
+        now_ms = int(time.time() * 1000)
+        dt_ms = int(dt * 1000)
+        # Measured DC draw only; baseline and PSU loss are applied at query time.
+        dc_mw = int((cpu_uj + gpu_uj) / dt / 1000)
+        day = datetime.now().astimezone().strftime("%Y-%m-%d")
+
+        # One transaction: a crash can lose an interval but can never count it
+        # in `samples` without counting it in `daily`, or the reverse.
+        with db:
+            db.execute("INSERT OR REPLACE INTO samples(ts, dt_ms, cpu_uj, gpu_uj) "
+                       "VALUES(?,?,?,?)", (now_ms, dt_ms, cpu_uj, gpu_uj))
+            db.execute(
+                """INSERT INTO daily(day, cpu_uj, gpu_uj, tracked_ms, peak_mw)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(day) DO UPDATE SET
+                     cpu_uj     = cpu_uj     + excluded.cpu_uj,
+                     gpu_uj     = gpu_uj     + excluded.gpu_uj,
+                     tracked_ms = tracked_ms + excluded.tracked_ms,
+                     peak_mw    = MAX(peak_mw, excluded.peak_mw)""",
+                (day, cpu_uj, gpu_uj, dt_ms, dc_mw))
+
+        if time.monotonic() - last_prune > 3600:
+            last_prune = time.monotonic()
+            cutoff = now_ms - int(cfg["raw_retention_days"]) * 86400 * 1000
+            with db:
+                db.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
+
+        if args.once:
+            return 0
+
+
+# --------------------------------------------------------------------------
+# reporting
+# --------------------------------------------------------------------------
+#
+# Every watt and kWh leaving this module is AT-SOCKET: measured DC energy is
+# divided by `psu_efficiency`, and the estimated remainder is added in. That
+# means the parts always sum to the whole -- `cpu_w + gpu_w + rest_w == watts`
+# and `cpu_kwh + gpu_kwh + rest_kwh == kwh` -- which matters because the UI
+# draws them as a stacked bar under the total. Raw sensor-side values are
+# offered separately as `*_dc_w` for anyone calibrating against a wall meter.
+
+
+def socket_kwh(cpu_uj: int, gpu_uj: int, tracked_ms: int, cfg: dict) -> float:
+    rest_uj = float(cfg["baseline_w"]) * (tracked_ms / 1000.0) * 1e6
+    return (cpu_uj + gpu_uj + rest_uj) / UJ_PER_KWH / float(cfg["psu_efficiency"])
+
+
+def socket_w(dc_w: float, cfg: dict) -> float:
+    """One measured component, corrected for PSU loss. No baseline added."""
+    return dc_w / float(cfg["psu_efficiency"])
+
+
+def total_socket_w(cpu_dc_w: float, gpu_dc_w: float, cfg: dict) -> float:
+    return (cpu_dc_w + gpu_dc_w + float(cfg["baseline_w"])) / float(cfg["psu_efficiency"])
+
+
+def boot_time_ms() -> int:
+    with open("/proc/uptime") as fh:
+        return int((time.time() - float(fh.read().split()[0])) * 1000)
+
+
+def no_data(cfg: dict, status: str = "no_data") -> dict:
+    # Deliberately carries NO live numeric fields. Returning `watts: 0` would
+    # let a consumer render absence of measurement as a measurement of zero.
+    return {
+        "status": status,
+        "currency": cfg["currency"],
+        "tariff": float(cfg["tariff"]),
+        "baseline_w": float(cfg["baseline_w"]),
+        "psu_efficiency": float(cfg["psu_efficiency"]),
+    }
+
+
+def cmd_now(args: argparse.Namespace, cfg: dict) -> dict:
+    if not DB_PATH.exists():
+        return no_data(cfg)
+    db = connect(read_only=True)
+    row = db.execute("SELECT ts, dt_ms, cpu_uj, gpu_uj FROM samples "
+                     "ORDER BY ts DESC LIMIT 1").fetchone()
+    if row is None:
+        return no_data(cfg)
+
+    ts, dt_ms, cpu_uj, gpu_uj = row
+    age = max(0, int(time.time() - ts / 1000))
+    # Judge staleness against the interval the RUNNING daemon recorded, not the
+    # config file this process just read: the two differ whenever the config was
+    # edited without restarting the daemon.
+    effective_interval = float(meta_get(db, "interval_s", cfg["interval_s"]) or cfg["interval_s"])
+
+    status = "ok"
+    if not RaplSensor().available:
+        status = "no_cpu_sensor"
+    elif age > max(30.0, effective_interval * 3):
+        status = "stale"
+
+    secs = max(dt_ms / 1000.0, 1e-6)
+    cpu_dc = cpu_uj / secs / 1e6
+    gpu_dc = gpu_uj / secs / 1e6
+    tariff = float(cfg["tariff"])
+
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
+    t_row = db.execute("SELECT cpu_uj, gpu_uj, tracked_ms FROM daily WHERE day = ?",
+                       (today,)).fetchone() or (0, 0, 0)
+    m_row = db.execute("""SELECT COALESCE(SUM(cpu_uj),0), COALESCE(SUM(gpu_uj),0),
+                                 COALESCE(SUM(tracked_ms),0)
+                          FROM daily WHERE day LIKE ?""", (today[:7] + "%",)).fetchone()
+
+    boot_ms = boot_time_ms()
+    b_row = db.execute("""SELECT COALESCE(SUM(cpu_uj),0), COALESCE(SUM(gpu_uj),0),
+                                 COALESCE(SUM(dt_ms),0)
+                          FROM samples WHERE ts >= ?""", (boot_ms,)).fetchone()
+    oldest = db.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+    # `samples` is pruned, so a boot older than the retention window can only be
+    # partially summed. Say so rather than under-reporting silently.
+    uptime_truncated = bool(oldest is not None and oldest > boot_ms)
+
+    today_kwh = socket_kwh(*t_row, cfg)
+    month_kwh = socket_kwh(*m_row, cfg)
+    measured_dc = cpu_dc + gpu_dc
+    return {
+        "status": status,
+        "watts": round(total_socket_w(cpu_dc, gpu_dc, cfg), 1),
+        "cpu_w": round(socket_w(cpu_dc, cfg), 1),
+        "gpu_w": round(socket_w(gpu_dc, cfg), 1),
+        "rest_w": round(socket_w(float(cfg["baseline_w"]), cfg), 1),
+        "cpu_dc_w": round(cpu_dc, 1),
+        "gpu_dc_w": round(gpu_dc, 1),
+        # What fraction of this reading is hardware-measured rather than the
+        # baseline constant. The honesty of every other number depends on it.
+        "measured_share": round(measured_dc / (measured_dc + float(cfg["baseline_w"])), 3)
+        if measured_dc + float(cfg["baseline_w"]) > 0 else 0.0,
+        "today_kwh": round(today_kwh, 4),
+        "today_cost": round(today_kwh * tariff, 2),
+        "month_kwh": round(month_kwh, 4),
+        "month_cost": round(month_kwh * tariff, 2),
+        "currency": cfg["currency"],
+        "tariff": tariff,
+        "baseline_w": float(cfg["baseline_w"]),
+        "psu_efficiency": float(cfg["psu_efficiency"]),
+        "uptime_kwh": round(socket_kwh(*b_row, cfg), 4),
+        "uptime_truncated": uptime_truncated,
+        # The live figure is the average over the most recent interval, not an
+        # instantaneous reading. Consumers should label it that way.
+        "window_s": round(secs, 1),
+        "sample_age_s": age,
+        "interval_s": effective_interval,
+    }
+
+
+def bucket_key(day: date, gran: str) -> str:
+    if gran == "day":
+        return day.isoformat()
+    if gran == "week":
+        y, w, _ = day.isocalendar()
+        return f"{y}-W{w:02d}"
+    if gran == "month":
+        return day.strftime("%Y-%m")
+    return day.strftime("%Y")
+
+
+def bucket_span_hours(key: str, gran: str, now: datetime) -> float:
+    """Wall-clock hours in a bucket, truncated at `now` for the current one.
+
+    Bucket edges are built as naive local datetimes and then resolved with
+    `.astimezone()`, which attaches the UTC offset in force at that instant.
+    Pinning them to `now.tzinfo` instead would stamp today's offset onto every
+    past bucket, so the day a DST transition lands on would come out 23 or 25
+    hours long and a fully-tracked day would be reported as partial coverage.
+    """
+    if gran == "day":
+        naive = datetime.fromisoformat(key)
+        start, end = naive.astimezone(), (naive + timedelta(days=1)).astimezone()
+    elif gran == "week":
+        year, week = key.split("-W")
+        naive = datetime.fromisocalendar(int(year), int(week), 1)
+        start, end = naive.astimezone(), (naive + timedelta(days=7)).astimezone()
+    elif gran == "month":
+        year, month = (int(p) for p in key.split("-"))
+        start = datetime(year, month, 1).astimezone()
+        end = datetime(year + (month == 12), month % 12 + 1, 1).astimezone()
+    else:
+        start = datetime(int(key), 1, 1).astimezone()
+        end = datetime(int(key) + 1, 1, 1).astimezone()
+    return max((min(end, now) - start).total_seconds() / 3600.0, 1e-9)
+
+
+def cmd_breakdown(args: argparse.Namespace, cfg: dict) -> dict:
+    gran = args.command
+    if not DB_PATH.exists():
+        return {"status": "no_data", "currency": cfg["currency"], "buckets": []}
+    db = connect(read_only=True)
+    rows = db.execute("SELECT day, cpu_uj, gpu_uj, tracked_ms, peak_mw "
+                      "FROM daily ORDER BY day").fetchall()
+    if not rows:
+        return {"status": "no_data", "currency": cfg["currency"], "buckets": []}
+
+    agg: dict[str, dict] = {}
+    for day_str, cpu_uj, gpu_uj, tracked_ms, peak_mw in rows:
+        b = agg.setdefault(bucket_key(date.fromisoformat(day_str), gran),
+                           {"cpu_uj": 0, "gpu_uj": 0, "tracked_ms": 0, "peak_mw": 0})
+        b["cpu_uj"] += cpu_uj
+        b["gpu_uj"] += gpu_uj
+        b["tracked_ms"] += tracked_ms
+        b["peak_mw"] = max(b["peak_mw"], peak_mw)
+
+    now = datetime.now().astimezone()
+    tariff = float(cfg["tariff"])
+    eff = float(cfg["psu_efficiency"])
+    baseline = float(cfg["baseline_w"])
+    out = []
+    for key in sorted(agg):
+        b = agg[key]
+        hours = b["tracked_ms"] / 3600000.0
+        kwh = socket_kwh(b["cpu_uj"], b["gpu_uj"], b["tracked_ms"], cfg)
+        out.append({
+            "label": key,
+            "kwh": round(kwh, 4),
+            "cost": round(kwh * tariff, 2),
+            # Average over the time actually sampled, NOT over the calendar
+            # bucket. For a partial bucket the two differ enormously; pair this
+            # with `coverage` before drawing any conclusion.
+            "avg_w_tracked": round(kwh * 1000 / hours, 1) if hours > 0 else 0.0,
+            # Largest single-interval average, so a spike shorter than one
+            # interval is averaged away. Never call this a peak.
+            "max_sample_w": round((b["peak_mw"] / 1000.0 + baseline) / eff, 1),
+            "hours": round(hours, 3),
+            "coverage": round(min(1.0, hours / bucket_span_hours(key, gran, now)), 4),
+            "cpu_kwh": round(b["cpu_uj"] / UJ_PER_KWH / eff, 4),
+            "gpu_kwh": round(b["gpu_uj"] / UJ_PER_KWH / eff, 4),
+            "rest_kwh": round(baseline * (b["tracked_ms"] / 1000.0) * 1e6 / UJ_PER_KWH / eff, 4),
+        })
+    if args.number > 0:
+        out = out[-args.number:]
+    return {"status": "ok", "currency": cfg["currency"], "tariff": tariff,
+            "buckets": out}
+
+
+def cmd_chart(args: argparse.Namespace, cfg: dict) -> dict:
+    if not DB_PATH.exists():
+        return {"status": "no_data", "step_s": 300, "points": []}
+    db = connect(read_only=True)
+    since = int((time.time() - args.hours * 3600) * 1000)
+    # Bucket raw samples so a 24 h window returns a drawable number of points
+    # rather than ~8600 of them.
+    step = max(60, int(args.hours * 3600 / 288))
+    rows = db.execute(
+        """SELECT (ts / 1000) / ? AS slot,
+                  SUM(cpu_uj + gpu_uj) AS uj,
+                  SUM(dt_ms) AS dt_ms
+           FROM samples WHERE ts >= ?
+           GROUP BY slot ORDER BY slot""", (step, since)).fetchall()
+    points = []
+    for slot, uj, dt_ms in rows:
+        secs = max(dt_ms / 1000.0, 1e-6)
+        # Divided by the time actually sampled in the slot, not by `step`, so a
+        # partial leading or trailing slot reports the draw it saw instead of a
+        # spuriously low average.
+        points.append({
+            "ts": int(slot * step),
+            "w": round(total_socket_w(uj / secs / 1e6, 0.0, cfg), 1),
+            "tracked_s": round(secs, 1),
+        })
+    return {"status": "ok" if points else "no_data", "step_s": step, "points": points}
+
+
+# --------------------------------------------------------------------------
+# human-readable rendering
+# --------------------------------------------------------------------------
+
+BLOCKS = "▏▎▍▌▋▊▉█"
+NO_SAMPLES = "no samples yet — is omarchy-energy.service running?"
+
+
+def bar(fraction: float, width: int = 22) -> str:
+    fraction = max(0.0, min(1.0, fraction))
+    filled = fraction * width
+    whole = int(filled)
+    out = "█" * whole
+    remainder = filled - whole
+    if whole < width and remainder > 0.06:
+        out += BLOCKS[min(len(BLOCKS) - 1, int(remainder * len(BLOCKS)))]
+    return out.ljust(width)
+
+
+def fmt_hours(hours: float) -> str:
+    if hours < 1:
+        return f"{hours * 60:.0f}m"
+    return f"{hours:.1f}h" if hours < 10 else f"{hours:.0f}h"
+
+
+def render_now(data: dict) -> str:
+    if "watts" not in data:
+        return NO_SAMPLES
+    cur = data["currency"]
+    lines = [
+        f"  now      {data['watts']:>7.1f} W    at socket, mean over the last "
+        f"{data['window_s']:.0f}s",
+        f"           {'':>7}      cpu {data['cpu_w']:.1f} + gpu {data['gpu_w']:.1f} "
+        f"+ rest {data['rest_w']:.1f} (estimated)",
+        f"           {'':>7}      {data['measured_share'] * 100:.0f}% of this reading "
+        f"is hardware-measured",
+        f"  today    {data['today_kwh']:>7.3f} kWh  {data['today_cost']:.2f} {cur}",
+        f"  month    {data['month_kwh']:>7.3f} kWh  {data['month_cost']:.2f} {cur}",
+        f"  boot     {data['uptime_kwh']:>7.3f} kWh"
+        # True both when sampling began after this boot and when the early part
+        # of a long boot has aged out of the raw table. Either way the figure
+        # covers less than the boot, which is the only thing worth saying.
+        + ("  (partial — not sampled for the whole boot)" if data["uptime_truncated"] else ""),
+    ]
+    if data["status"] == "stale":
+        lines.append(f"  ! last sample {data['sample_age_s']}s ago — daemon may be down")
+    elif data["status"] == "no_cpu_sensor":
+        lines.append("  ! RAPL unreadable — CPU draw is missing from these totals")
+    return "\n".join(lines)
+
+
+def render_breakdown(data: dict) -> str:
+    if not data["buckets"]:
+        return NO_SAMPLES
+    cur = data["currency"][:1]
+    top = max(b["kwh"] for b in data["buckets"]) or 1.0
+    width = max(len(b["label"]) for b in data["buckets"])
+    lines = [f"  {'':{width}}  {'kWh':>8}  {'cost':>8}  {'avg':>7}  {'max':>7}",
+             f"  {'':{width}}  {'':>8}  {'':>8}  {'tracked':>7}  {'~sample':>7}"]
+    for b in data["buckets"]:
+        partial = "" if b["coverage"] >= 0.98 else f"  ({fmt_hours(b['hours'])} tracked)"
+        lines.append(
+            f"  {b['label']:{width}}  {b['kwh']:>8.3f}  {b['cost']:>7.2f}{cur}  "
+            f"{b['avg_w_tracked']:>6.0f}W  {b['max_sample_w']:>6.0f}W  "
+            f"{bar(b['kwh'] / top)}{partial}")
+    lines.append(f"  {'total':{width}}  {sum(b['kwh'] for b in data['buckets']):>8.3f}  "
+                 f"{sum(b['cost'] for b in data['buckets']):>7.2f}{cur}")
+    return "\n".join(lines)
+
+
+def render_status(data: dict) -> str:
+    lines = []
+    for key, value in data.items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            lines.append(f"  {key}:")
+            for item in value:
+                lines.append("      " + "  ".join(f"{k}={v}" for k, v in item.items()))
+        else:
+            lines.append(f"  {key:18} {value}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="omaenergy",
+        description="Energy consumption of this machine, per day / week / month / year.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_daemon = sub.add_parser("daemon", help="run the sampler (systemd user service)")
+    p_daemon.add_argument("--once", action="store_true",
+                          help="record a single interval and exit")
+
+    sub.add_parser("now", help="live draw plus today, this month and this boot")
+    for gran in ("day", "week", "month", "year"):
+        p = sub.add_parser(gran, help=f"consumption per {gran}")
+        p.add_argument("-n", "--number", type=int,
+                       default={"day": 14, "week": 8, "month": 12, "year": 0}[gran],
+                       help="how many buckets, newest last (0 = all)")
+    p_chart = sub.add_parser("chart", help="power over time, for plotting")
+    p_chart.add_argument("--hours", type=float, default=24.0)
+    sub.add_parser("status", help="discovered sensors, database and configuration")
+
+    for name, p in sub.choices.items():
+        if name != "daemon":
+            p.add_argument("--json", action="store_true", help="machine-readable output")
+
+    args = parser.parse_args(argv)
+    cfg = load_config()
+
+    if args.command == "daemon":
+        try:
+            return run_daemon(args)
+        except KeyboardInterrupt:
+            return 0
+
+    if args.command == "status":
+        data = {
+            **describe_sources(cfg),
+            "db": str(DB_PATH),
+            "config": str(CONFIG_PATH),
+            "baseline_w": cfg["baseline_w"],
+            "psu_efficiency": cfg["psu_efficiency"],
+            "tariff": cfg["tariff"],
+            "currency": cfg["currency"],
+            "interval_s": cfg["interval_s"],
+            "gpu_interval_s": cfg["gpu_interval_s"],
+        }
+        if DB_PATH.exists():
+            db = connect(read_only=True)
+            data["samples"] = db.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+            data["days"] = db.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
+            data["tracking_since"] = db.execute("SELECT MIN(day) FROM daily").fetchone()[0]
+            data["dropped_intervals"] = int(meta_get(db, "dropped_intervals", "0") or 0)
+            data["daemon_interval_s"] = meta_get(db, "interval_s")
+        print(json.dumps(data, indent=2) if args.json else render_status(data))
+        return 0
+
+    if args.command == "now":
+        data = cmd_now(args, cfg)
+        print(json.dumps(data) if args.json else render_now(data))
+        return 0
+
+    if args.command == "chart":
+        data = cmd_chart(args, cfg)
+        if args.json:
+            print(json.dumps(data))
+        else:
+            for pt in data["points"]:
+                stamp = datetime.fromtimestamp(pt["ts"]).astimezone().strftime("%H:%M")
+                print(f"  {stamp}  {pt['w']:>6.1f} W  {bar(pt['w'] / 400)}")
+        return 0
+
+    data = cmd_breakdown(args, cfg)
+    print(json.dumps(data) if args.json else render_breakdown(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

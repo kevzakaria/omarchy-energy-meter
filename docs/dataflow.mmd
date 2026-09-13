@@ -1,0 +1,31 @@
+---
+config:
+  theme: dark
+  themeVariables:
+    darkMode: true
+    primaryTextColor: "#e6edf3"
+    lineColor: "#8b949e"
+    clusterBkg: "#161b22"
+    clusterBorder: "#30363d"
+    titleColor: "#e6edf3"
+---
+flowchart TB
+  classDef measured fill:#0d3b2e,stroke:#3fb950,color:#e6edf3
+  classDef estimated fill:#3d2a00,stroke:#d29922,color:#e6edf3
+
+  subgraph sample ["Per-sample — measured only"]
+    R[Read counters] --> D[Delta / integrate]
+    D --> G[Guard: wrap, suspend/gap drop]
+    G --> S[Store measured uJ]
+  end
+
+  subgraph query ["Query time — estimates enter here"]
+    A[Aggregate daily<br/>day / week / month / year] --> B[Add baseline_w]
+    B --> P[Divide by psu_efficiency]
+    P --> K[kWh and cost via tariff]
+  end
+
+  S -.->|"no estimates stored"| A
+
+  class R,D,G,S,A measured
+  class B,P,K estimated
