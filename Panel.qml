@@ -93,6 +93,18 @@ Panel {
   property string configSaveError: ""
   property bool restartRequired: false
   readonly property bool configFieldFocused: configFocusCount > 0
+  property int configDraftGen: 0
+
+  // Currencies are fetched once per shell session, the first time the
+  // settings pane opens — not at widget construction and not on the
+  // `now` poll. An empty or failed list falls back to the free-text
+  // field so a broken picker cannot lock the user out.
+  property var currencyOptions: []
+  property bool currenciesLoaded: false
+  property bool currenciesFailed: false
+  property bool currenciesLoading: false
+  property bool currencyPopupOpen: false
+
 
 
   property real sampleAgeS: 0
@@ -356,7 +368,7 @@ Panel {
 
   readonly property var configMoneyFields: [
     { key: "tariff", label: "Tariff", unit: "/kWh", blurb: "price per kWh", kind: "number" },
-    { key: "currency", label: "Currency", unit: "", blurb: "ISO currency code, e.g. EUR, USD, IDR", kind: "code" },
+    { key: "currency", label: "Currency", unit: "", blurb: "ISO 4217 code. The list is not exhaustive.", kind: "currency" },
     { key: "currency_symbol", label: "Symbol", unit: "", blurb: "override the symbol; empty means auto", kind: "text" },
     { key: "cost_decimals", label: "Decimals", unit: "", blurb: "decimal places for money; auto by currency", kind: "autoNumber" }
   ]
@@ -437,6 +449,7 @@ Panel {
   function setConfigDraft(key, value) {
     if (!configDrafts) configDrafts = ({})
     configDrafts[key] = value
+    configDraftGen += 1
   }
 
   function allConfigFields() {
@@ -470,6 +483,7 @@ Panel {
     restartRequired = false
     configFocusCount = 0
     loadConfig()
+    loadCurrencies()
     if (panelFlick) panelFlick.contentY = 0
   }
 
@@ -477,6 +491,7 @@ Panel {
     if (root.bar) root.bar.hideTooltip(gearHit)
     configOpen = false
     configFocusCount = 0
+    currencyPopupOpen = false
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
@@ -568,6 +583,87 @@ Panel {
       root.bar.run("systemctl --user restart omarchy-energy")
     restartRequired = false
   }
+  function parseJsonArray(text) {
+    try {
+      var data = JSON.parse(String(text || ""))
+      if (!Array.isArray(data)) return null
+      return data
+    } catch (e) {
+      return null
+    }
+  }
+
+  function formatCurrencyExample(symbol, decimals) {
+    var body = formatMoneyNumber(1234, decimals)
+    var s = String(symbol || "")
+    if (s.length === 1) return s + body
+    return s + " " + body
+  }
+
+  function currencyInList(code) {
+    var c = String(code || "").trim().toUpperCase()
+    if (!c) return false
+    var opts = currencyOptions || []
+    for (var i = 0; i < opts.length; i++) {
+      if (String(opts[i].value).toUpperCase() === c) return true
+    }
+    return false
+  }
+
+  readonly property string currencyOverrideHint: {
+    var _ = configDraftGen
+    var sym = String((configDrafts && configDrafts.currency_symbol) || "").trim()
+    var dec = String((configDrafts && configDrafts.cost_decimals) || "").trim()
+    if (sym === "" && dec === "") return ""
+    var bits = []
+    if (sym !== "") bits.push("symbol " + sym)
+    if (dec !== "") bits.push(dec + " decimal place" + (dec === "1" ? "" : "s"))
+    return "Override in effect: " + bits.join(", ") + " wins over this currency's default."
+  }
+
+  function loadCurrencies() {
+    if (currenciesLoaded || currenciesLoading || loadCurrenciesProc.running) return
+    currenciesLoading = true
+    currenciesFailed = false
+    loadCurrenciesProc.command = [root.cli, "currencies", "--json"]
+    loadCurrenciesProc.running = true
+  }
+
+  function applyCurrencies(text) {
+    currenciesLoading = false
+    var data = parseJsonArray(text)
+    if (!data || data.length === 0) {
+      currenciesFailed = true
+      currencyOptions = []
+      currenciesLoaded = false
+      return
+    }
+    var opts = []
+    for (var i = 0; i < data.length; i++) {
+      var row = data[i]
+      if (!row || row.code === undefined || row.code === null) continue
+      var code = String(row.code).trim()
+      if (!code) continue
+      var symbol = (row.symbol !== undefined && row.symbol !== null && String(row.symbol) !== "")
+        ? String(row.symbol) : code
+      var decimals = num(row.decimals, 2)
+      var example = formatCurrencyExample(symbol, decimals)
+      opts.push({
+        value: code,
+        label: code + " \u00b7 " + symbol + " \u00b7 " + example
+      })
+    }
+    if (opts.length === 0) {
+      currenciesFailed = true
+      currencyOptions = []
+      currenciesLoaded = false
+      return
+    }
+    currencyOptions = opts
+    currenciesLoaded = true
+    currenciesFailed = false
+  }
+
 
 
 
@@ -821,6 +917,20 @@ Panel {
     }
     onExited: function(code) { root.applyConfigSave(code) }
   }
+  Process {
+    id: loadCurrenciesProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyCurrencies(text)
+    }
+    onExited: function(code) {
+      root.currenciesLoading = false
+      if (code !== 0 && !root.currenciesLoaded) {
+        root.currenciesFailed = true
+        root.currencyOptions = []
+      }
+    }
+  }
 
 
 
@@ -878,7 +988,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.configFieldFocused
+      blocked: root.configFieldFocused || root.currencyPopupOpen
       onMoveRequested: function(dx, dy) {
         if (root.configOpen) {
           if (dy !== 0 && panelFlick)
@@ -1301,11 +1411,38 @@ Panel {
   component ConfigRow: Column {
     id: cfg
     property var spec: ({})
+    property bool customOpen: false
     width: parent ? parent.width : 0
     spacing: Style.space(2)
 
     readonly property string key: spec && spec.key ? String(spec.key) : ""
     readonly property string kind: spec && spec.kind ? String(spec.kind) : "text"
+    readonly property bool usePicker: kind === "currency" && root.currenciesLoaded
+    property bool currenciesReady: root.currenciesLoaded
+    onCurrenciesReadyChanged: if (kind === "currency") syncEditors()
+
+    function syncEditors() {
+      var current = ""
+      if (root.configDrafts && root.configDrafts[cfg.key] !== undefined)
+        current = String(root.configDrafts[cfg.key])
+      else
+        current = root.configLoadedText(cfg.key)
+      field.text = current
+      if (cfg.kind === "currency") {
+        currencyPicker.value = current
+        currencyCustomField.text = current
+        if (root.currenciesLoaded)
+          cfg.customOpen = current !== "" && !root.currencyInList(current)
+      }
+    }
+
+    function commitCurrency(code) {
+      var v = String(code || "")
+      root.setConfigDraft("currency", v)
+      if (field.text !== v) field.text = v
+      if (currencyCustomField.text !== v) currencyCustomField.text = v
+      if (currencyPicker.value !== v) currencyPicker.value = v
+    }
 
     Row {
       width: parent.width
@@ -1322,8 +1459,31 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
       }
 
+      SearchableDropdown {
+        id: currencyPicker
+        visible: cfg.usePicker
+        width: visible ? Math.min(Style.spacing.searchableDropdownWidth, Math.max(Style.space(150), cfg.width - Style.space(126))) : 0
+        height: visible ? implicitHeight : 0
+        showLabel: false
+        enabled: !root.configSaving
+        foreground: root.foreground
+        accent: root.accent
+        fontFamily: root.fontFamily
+        placeholderText: "Search currencies..."
+        emptyText: "No matches"
+        options: root.currencyOptions
+        onPopupOpenChanged: if (cfg.kind === "currency") root.currencyPopupOpen = popupOpen
+        onVisibleChanged: if (!visible) close()
+        onChanged: function(v) {
+          if (cfg.kind !== "currency") return
+          cfg.commitCurrency(v)
+          cfg.customOpen = !root.currencyInList(v)
+        }
+      }
+
       TextField {
         id: field
+        visible: !cfg.usePicker
         width: Style.space(150)
         enabled: !root.configSaving
         placeholderText: cfg.kind === "autoNumber" ? "auto" : ""
@@ -1333,8 +1493,8 @@ Panel {
         verticalPadding: Style.space(2)
         inputMethodHints: (cfg.kind === "number" || cfg.kind === "autoNumber") ? Qt.ImhFormattedNumbersOnly : Qt.ImhNone
         property int epoch: root.configEpoch
-        onEpochChanged: text = root.configLoadedText(cfg.key)
-        Component.onCompleted: text = root.configLoadedText(cfg.key)
+        onEpochChanged: cfg.syncEditors()
+        Component.onCompleted: cfg.syncEditors()
         onTextChanged: root.setConfigDraft(cfg.key, text)
         onActiveFocusChanged: {
           if (activeFocus) root.configFocusCount += 1
@@ -1364,9 +1524,63 @@ Panel {
 
     Text {
       textFormat: Text.PlainText
+      visible: cfg.usePicker
+      width: parent.width
+      text: cfg.customOpen ? "Custom code (2–5 letters), then Save." : "Not listed? Custom code — any 2–5 letter code."
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: cfg.customOpen = !cfg.customOpen
+      }
+    }
+
+    TextField {
+      id: currencyCustomField
+      visible: cfg.usePicker && cfg.customOpen
+      width: Style.space(150)
+      enabled: !root.configSaving
+      placeholderText: "e.g. XXX"
+      foreground: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      verticalPadding: Style.space(2)
+      onTextChanged: cfg.commitCurrency(text)
+      onActiveFocusChanged: {
+        if (activeFocus) root.configFocusCount += 1
+        else root.configFocusCount = Math.max(0, root.configFocusCount - 1)
+      }
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) {
+          root.closeConfig()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+          root.commitConfig()
+          event.accepted = true
+        }
+      }
+    }
+
+    Text {
+      textFormat: Text.PlainText
       width: parent.width
       text: cfg.spec && cfg.spec.blurb ? String(cfg.spec.blurb) : ""
       color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: cfg.key === "currency" && root.currencyOverrideHint !== ""
+      width: parent.width
+      text: root.currencyOverrideHint
+      color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap

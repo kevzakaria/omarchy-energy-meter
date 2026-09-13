@@ -575,9 +575,11 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   `EUR` renders `€0.42` and `IDR` renders `Rp 2,041` rather than `0.42E`.
   Overridable with `currency_symbol` and `cost_decimals`.
 - `omaenergy currencies` lists the known codes with their symbol and precision.
-  The settings pane's currency picker is populated from it, so there is no
-  second copy of the table in the QML. Any 2–5 letter code still works, listed
-  or not, which is what keeps the picker from being a cage.
+  The settings pane's currency field is a searchable dropdown populated from
+  it, showing each option's consequence (`EUR · € · €1,234.00`), so there is no
+  second copy of the table in the QML. The list is not a cage: any 2–5 letter
+  code can be entered, and a code that is already saved but unlisted stays
+  selected instead of snapping to the first row.
 - A "Why this exists" section, because the point is easy to miss: this is for
   people without a smart plug or a whole-home energy monitor. The counters are
   already in the machine and are simply never accumulated.
