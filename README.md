@@ -19,8 +19,43 @@ fraction of the number is real.
 
 ---
 
+## Why this exists
+
+Most people have no way to find out what their computer costs to run. A smart
+plug or an in-home energy display answers it instantly, but that means buying
+hardware, and plenty of houses have neither — a utility meter in a cupboard
+that reports once a month tells you about the whole house, not about this
+machine.
+
+Meanwhile the machine already knows. Modern CPUs and GPUs carry energy and
+power counters the kernel exposes for free; they are simply never accumulated,
+so the information evaporates every second. This plugin does the accumulating:
+**no extra hardware, nothing to buy, and a permanent record from the day you
+install it.**
+
+What that gets you is the part that is genuinely hard to guess:
+
+- **Consumption over time, not a snapshot.** What a week of your actual work
+  costs, not what the machine draws in the instant you happen to look.
+- **Which days were expensive, and why.** A day of compiling and a day of
+  reading email differ by a factor of three, and the breakdown separates them
+  from the days the machine was simply switched off.
+- **A number you can put against a bill.** Not to the cent, but close enough
+  to know whether this machine is a rounding error on your electricity bill or
+  a real line item — and close enough to tell whether a change you made
+  (undervolting, a power profile, leaving it on overnight) actually mattered.
+
+It is not a replacement for a wall meter, and it does not pretend to be: the
+CPU and GPU are measured, the rest of the machine is an estimate you can
+[calibrate](#accuracy-and-how-to-calibrate-it-away), and every screen tells
+you which is which. If you do own a smart plug, use it to calibrate this once
+and the two agree closely from then on.
+
+---
+
 ## Contents
 
+- [Why this exists](#why-this-exists)
 - [Install](#install)
 - [What you get](#what-you-get)
 - [What is measured and what is estimated](#what-is-measured-and-what-is-estimated)
@@ -285,6 +320,7 @@ omaenergy chart --hours 24    # power over time
 omaenergy status              # discovered sensors, database, configuration
 omaenergy config              # show settings
 omaenergy config tariff=0.42  # change the price per kWh, retroactively
+omaenergy currencies          # codes it knows, with symbol and precision
 ```
 
 Every subcommand takes `--json`. `status` is the one to paste into a bug report:
@@ -318,7 +354,7 @@ omaenergy config baseline_w=37.5            # after calibrating
 | Key | Default | |
 |---|---|---|
 | `tariff` | 0.30 | **Price per kWh. Set this first** — the shipped value is a placeholder, not your tariff. Retroactive |
-| `currency` | `EUR` | ISO code. Picks the symbol and the natural precision: `€0.42`, `Rp 2,041`, `¥180` |
+| `currency` | `EUR` | ISO code, picked from a searchable list in the settings pane. Decides the symbol and the natural precision: `€0.42`, `Rp 2,041`, `¥180`. Any 2–5 letter code is accepted, listed or not — see `omaenergy currencies` |
 | `currency_symbol` | auto | Override the symbol if your currency is not in the table, or you simply prefer another glyph |
 | `cost_decimals` | auto | Decimal places for money. `2` where a cent exists, `0` for IDR / JPY / KRW / VND where it does not |
 | `baseline_w` | 32 desktop / 12 laptop | The unmeasurable remainder. **Calibrate this.** Retroactive |
@@ -530,6 +566,13 @@ nothing — see [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace)
 - Currency handling worth the name: a symbol and natural-precision table, so
   `EUR` renders `€0.42` and `IDR` renders `Rp 2,041` rather than `0.42E`.
   Overridable with `currency_symbol` and `cost_decimals`.
+- `omaenergy currencies` lists the known codes with their symbol and precision.
+  The settings pane's currency picker is populated from it, so there is no
+  second copy of the table in the QML. Any 2–5 letter code still works, listed
+  or not, which is what keeps the picker from being a cage.
+- A "Why this exists" section, because the point is easy to miss: this is for
+  people without a smart plug or a whole-home energy monitor. The counters are
+  already in the machine and are simply never accumulated.
 - `measured_share` in the payload and in the panel — the share of the reading
   that is hardware-measured rather than the baseline estimate. The plugin's
   central claim was previously invisible in its own UI.
@@ -586,6 +629,9 @@ release, and they are listed because they explain why numbers moved
   freshness deadline, which also covers hung polls and a stopped daemon.
 - Bucket spans are built with per-instant UTC offsets, so a DST transition day
   is 23 or 25 hours long and does not read as partially tracked.
+- `omaenergy <anything> | head` printed a `BrokenPipeError` traceback at
+  interpreter shutdown. Closing a pipe early is ordinary shell usage, not a
+  crash, and it should not look like one.
 
 ---
 

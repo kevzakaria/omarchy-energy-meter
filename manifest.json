@@ -6,7 +6,7 @@
   "author": "Kevin Zakaria",
   "license": "MIT",
   "homepage": "https://github.com/kevzakaria/omarchy-energy-meter",
-  "description": "Live at-socket power draw on the bar, and a panel with energy and cost per day, week, month, and year. CPU energy comes from RAPL hardware counters and GPU power from amdgpu; the rest of the machine is a calibratable estimate, and the split between measured and estimated is always shown.",
+  "description": "Find out what your computer actually costs to run, without a smart plug or a house energy monitor. Live at-socket watts on the bar, and a panel with energy and cost per day, week, month and year, kept permanently from the day you install it. CPU energy comes from RAPL hardware counters and GPU power from amdgpu; the rest of the machine is a calibratable estimate, and the share of every reading that is actually measured is always on screen.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"

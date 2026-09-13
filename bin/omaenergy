@@ -1070,6 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
     p_chart = sub.add_parser("chart", help="power over time, for plotting")
     p_chart.add_argument("--hours", type=float, default=24.0)
     sub.add_parser("status", help="discovered sensors, database and configuration")
+    sub.add_parser("currencies",
+                   help="currency codes this build knows, with symbol and precision")
 
     p_config = sub.add_parser(
         "config",
@@ -1096,6 +1098,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "config":
         return cmd_config(args, cfg)
+
+    if args.command == "currencies":
+        # The widget's currency picker is populated from here rather than from a
+        # copy of the table in QML: one list, and an unknown code entered by
+        # hand still works because `currency_symbol` and `cost_decimals` can be
+        # set explicitly.
+        rows = [{"code": code, "symbol": symbol, "decimals": decimals}
+                for code, (symbol, decimals) in sorted(CURRENCIES.items())]
+        if args.json:
+            print(json.dumps(rows))
+        else:
+            for row in rows:
+                print(f"  {row['code']}  {row['symbol']:<4} {row['decimals']} dp"
+                      f"   {fmt_cost(1234.5, {'currency': row['code']})}")
+        return 0
 
     if args.command == "status":
         data = {
@@ -1140,4 +1157,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # `omaenergy currencies | head` closes the pipe while we are still
+        # writing. Python would otherwise print a traceback at interpreter
+        # shutdown when it flushes stdout, which looks like a crash for what is
+        # ordinary shell usage. Redirect the fd so that final flush is a no-op.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
