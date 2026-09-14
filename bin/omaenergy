@@ -177,6 +177,17 @@ CREATE TABLE IF NOT EXISTS daily (
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
+# Bumped whenever an existing table changes shape. `CREATE TABLE IF NOT EXISTS`
+# is silent about a table that already exists with the wrong columns, so the
+# version is the only thing standing between a schema change and a database
+# that reads as fine and reports nonsense.
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """The database on disk was written by a schema this build cannot read."""
+
+
 
 # --------------------------------------------------------------------------
 # configuration
@@ -632,6 +643,31 @@ def describe_sources(cfg: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
+def gate_schema_version(db: sqlite3.Connection, read_only: bool) -> None:
+    """Refuse a database this build cannot read; stamp one it can.
+
+    `PRAGMA user_version` lives in the SQLite header rather than in a row, so
+    it survives anything that could happen to the `meta` table and it is read
+    without a query that might itself depend on the schema. Version 0 is both
+    a brand new file and every database written before this check existed,
+    which stamped `meta.schema_version` and then never read it back. Both are
+    schema 1, so 0 is stamped rather than migrated.
+
+    A reporting command never writes, so it only refuses; stamping and any
+    future migration belong to the daemon that owns the file.
+    """
+    on_disk = db.execute("PRAGMA user_version").fetchone()[0]
+    if on_disk > SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"{DB_PATH} is schema {on_disk}, and this build understands "
+            f"{SCHEMA_VERSION}. A newer omaenergy wrote it. Upgrade rather "
+            f"than downgrade: an older build would not see the change and "
+            f"would report against columns that no longer mean what it thinks.")
+    if read_only or on_disk == SCHEMA_VERSION:
+        return
+    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
 def connect(read_only: bool = False) -> sqlite3.Connection:
     ensure_private_dir(STATE_DIR)
     if read_only and DB_PATH.exists():
@@ -640,12 +676,14 @@ def connect(read_only: bool = False) -> sqlite3.Connection:
         # mid-interval.
         db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=10.0)
         db.execute("PRAGMA busy_timeout = 10000")
+        gate_schema_version(db, read_only=True)
         return db
     db = sqlite3.connect(DB_PATH, timeout=10.0)
     db.execute("PRAGMA busy_timeout = 10000")
     db.execute("PRAGMA journal_mode = WAL")  # readers never block the writer
     db.execute("PRAGMA synchronous = NORMAL")
     db.executescript(SCHEMA)
+    gate_schema_version(db, read_only=False)
     db.commit()
     # SQLite creates the db and the -wal/-shm sidecars itself, under the
     # process umask, so they land 0644 unless we tighten them after they exist.
@@ -700,7 +738,9 @@ def run_daemon(args: argparse.Namespace) -> int:
               f"read 0 and is not included in totals.", file=sys.stderr)
 
     db = connect()
-    meta_set(db, "schema_version", 1)
+    # Mirrored from PRAGMA user_version, which is authoritative; this row is
+    # kept so `meta` stays self-describing for anyone reading the file by hand.
+    meta_set(db, "schema_version", SCHEMA_VERSION)
     meta_set(db, "interval_s", interval)          # the EFFECTIVE interval, so
     meta_set(db, "gpu_interval_s", gpu_interval)  # readers judge staleness
     meta_set(db, "daemon_started_ms", int(time.time() * 1000))
@@ -1256,6 +1296,9 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except SchemaVersionError as exc:
+        print(f"omaenergy: {exc}", file=sys.stderr)
+        sys.exit(1)
     except BrokenPipeError:
         # `omaenergy currencies | head` closes the pipe while we are still
         # writing. Python would otherwise print a traceback at interpreter

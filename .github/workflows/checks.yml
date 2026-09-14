@@ -1,0 +1,33 @@
+# Cheap, dependency-free checks. Nothing here installs a package: the runner
+# already has bash, git and python3, and an installer step would be one more
+# thing that can break for a reason unrelated to this repository.
+#
+# .github/ is outside the Omarchy marketplace security scanner's scope, so a
+# workflow file cannot change the plugin's reported capability set.
+name: checks
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+    branches: [main, release]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # scripts/check-docs.sh uses `git grep`, which needs the work tree
+          # and nothing else; one commit is enough.
+          fetch-depth: 1
+
+      - name: Documentation matches what is shipped
+        run: ./scripts/check-docs.sh
+
+      - name: CLI compiles
+        run: python3 -m py_compile bin/omaenergy

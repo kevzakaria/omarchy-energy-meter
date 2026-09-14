@@ -12,6 +12,35 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
+## Unreleased
+
+**Added**
+
+- `scripts/check-docs.sh` asserts that the documentation matches what ships,
+  and CI runs it on `main` and `release`. It compares the README's copy of the
+  udev rule against the rule file itself, searches every tracked file except
+  this one for privilege claims the repo has already retracted, and checks
+  `manifest.json`'s version against the newest entry here.
+
+  Matching is done on a whitespace-flattened copy of each file rather than
+  line by line, because the sentence that prompted this was wrapped across two
+  comment lines. The first version of the script grepped lines and passed
+  clean on the v1.2.2 tree that still carried the claim. Run against every
+  tag, it now fails v1.0.0 through v1.2.2 and passes v1.2.3.
+
+**Fixed**
+
+- The database wrote `schema_version` into `meta` and never read it back, so
+  the marker that exists to catch a schema change could not catch one. A
+  changed table would have met `CREATE TABLE IF NOT EXISTS`, which is silent
+  about a table that already exists with the wrong columns, and the mismatch
+  would have surfaced as wrong numbers rather than as an error. The version is
+  now `PRAGMA user_version`, which lives in the SQLite header rather than in a
+  row, and it is checked on every open: a database written by a newer build is
+  refused instead of misread. Reporting commands refuse but never stamp or
+  migrate, which stays with the daemon that owns the file. Existing databases
+  read as version 0 and are stamped 1, because that is what they are.
+
 ## 1.2.3
 
 **Fixed**
