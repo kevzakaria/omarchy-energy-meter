@@ -12,6 +12,19 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
+## Unreleased
+
+**Fixed**
+
+- The udev rule's own comment claimed it "confers no privilege the wheel group
+  does not already hold". The README has said otherwise since 1.2.0: a member
+  of `wheel` can already read this counter by authenticating to `sudo`, and the
+  rule removes that authentication step, which is exactly what puts the sample
+  rate under any process running as you. The comment now says what the rule
+  does rather than what is comfortable: no write access and no new command, but
+  the `sudo` step is gone. The rule itself is unchanged, so an installed copy
+  needs no action.
+
 ## 1.2.2
 
 **Changed**
