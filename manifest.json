@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.kevzakaria.energy-meter",
   "name": "Energy Meter",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "author": "Kevin Zakaria",
   "license": "MIT",
   "homepage": "https://github.com/kevzakaria/omarchy-energy-meter",
