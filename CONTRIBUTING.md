@@ -141,7 +141,9 @@ From the plugin directory (repo root or the config checkout):
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" *.qml
 python3 -m py_compile bin/omaenergy
+scripts/check-docs.sh
 scripts/check-path-safety.sh
+scripts/check-sqlite-locks.sh
 ```
 
 `$OMARCHY_PATH` is `/usr/share/omarchy` on a normal install. `qmllint` must

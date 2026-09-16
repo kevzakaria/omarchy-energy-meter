@@ -35,5 +35,11 @@ jobs:
         # audit 4 is the static half.
         run: ./scripts/check-path-safety.sh
 
+      - name: Tightening permissions does not unlock SQLite
+        # Regression guard for issue #2: the daemon took SIGBUS in a WAL
+        # checkpoint after the permission pass cancelled its own POSIX locks.
+        # Reads /proc/locks; needs no RAPL, GPU, systemd or network.
+        run: ./scripts/check-sqlite-locks.sh
+
       - name: CLI compiles
         run: python3 -m py_compile bin/omaenergy

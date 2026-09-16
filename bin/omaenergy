@@ -343,7 +343,11 @@ def write_managed_file(dir_fd: int, name: str, text: str) -> None:
 
 
 def tighten_managed_file(dir_fd: int, name: str, mode: int = 0o600) -> None:
-    """fchmod on an O_NOFOLLOW fd. Never chmod by pathname."""
+    """fchmod on an O_NOFOLLOW fd. Never chmod by pathname.
+
+    Never call this on an inode SQLite has open in this process: the open and
+    close below would drop SQLite's locks on it. See tighten_db_files().
+    """
     path = _dir_path(dir_fd) / name
     if managed_stat(dir_fd, name) is None:
         return
@@ -370,15 +374,59 @@ def db_sidecars() -> tuple[str, str]:
     return "energy.db-wal", "energy.db-shm"
 
 
-def tighten_managed_paths() -> None:
-    """Owner-only modes on the state/config dirs and the files we put there."""
+def tighten_db_files(dir_fd: int) -> None:
+    """Tighten the database and its sidecars. Only before connect(), never after.
+
+    A POSIX advisory lock is dropped when *any* descriptor for the inode is
+    closed, not only the descriptor that took the lock, and the drop is
+    process-wide. tighten_managed_file() opens and closes a descriptor of its
+    own -- it does that even when the mode already matches -- so running it
+    against energy.db or a WAL sidecar while this process has the database
+    open unlocks them underneath SQLite without any error being raised.
+    Another connection is then free to treat the shared-memory file as unused
+    and reset or truncate it while we still have it mapped, and the next
+    checkpoint reads a page that no longer has storage behind it and takes
+    SIGBUS. That is not theoretical: it crashed the daemon inside
+    walIteratorNext during COMMIT (issue #2), and the lock loss reproduces in
+    twenty lines against a throwaway database.
+
+    https://www.sqlite.org/howtocorrupt.html#posix_advisory_locks_canceled_by_a_separate_thread_doing_close_
+
+    So the modes are fixed before the connection exists and only verified
+    afterwards. Nothing is given up by that ordering: SQLite creates -wal and
+    -shm with the database file's own mode, so tightening energy.db first is
+    what makes the sidecars 0600 whatever umask we inherited.
+    """
+    tighten_managed_file(dir_fd, "energy.db")
+    for name in db_sidecars():
+        tighten_managed_file(dir_fd, name)
+
+
+def verify_db_modes(dir_fd: int) -> None:
+    """Stat the database and sidecars without opening them. Safe while connected."""
+    managed_stat(dir_fd, "energy.db")
+    for name in db_sidecars():
+        managed_stat(dir_fd, name)
+
+
+def tighten_managed_paths(*, db_files: bool = True) -> None:
+    """Owner-only modes on the state/config dirs and the files we put there.
+
+    `db_files=False` is for a caller that already holds the database open;
+    tighten_db_files() has the reason. Those files are still stat'd, so a
+    planted symlink or hard link is still refused -- only the open, fchmod and
+    close are skipped, and that is the part with nothing left to do anyway.
+    """
     dir_fd = state_dir_fd(create=False)
     if dir_fd is not None:
-        tighten_managed_file(dir_fd, "energy.db")
-        for name in db_sidecars():
-            tighten_managed_file(dir_fd, name)
+        if db_files:
+            tighten_db_files(dir_fd)
+        else:
+            verify_db_modes(dir_fd)
     dir_fd = config_dir_fd(create=False)
     if dir_fd is not None:
+        # Not a database inode: nothing in this process holds config.json open
+        # across the tighten, so the close here cancels no lock of ours.
         tighten_managed_file(dir_fd, "config.json")
 
 
@@ -924,13 +972,11 @@ def _create_empty_owned(dir_fd: int, name: str) -> None:
 def _verify_db_files(dir_fd: int, *, tighten: bool) -> None:
     if managed_stat(dir_fd, "energy.db") is None:
         raise _unsafe(DB_PATH, "vanished while it was being opened")
+    # `tighten` is legal only on the pre-connect call: see tighten_db_files().
     if tighten:
-        tighten_managed_file(dir_fd, "energy.db")
-    for name in db_sidecars():
-        if tighten:
-            tighten_managed_file(dir_fd, name)
-        else:
-            managed_stat(dir_fd, name)
+        tighten_db_files(dir_fd)
+    else:
+        verify_db_modes(dir_fd)
 
 
 def connect(read_only: bool = False) -> sqlite3.Connection:
@@ -966,6 +1012,12 @@ def connect(read_only: bool = False) -> sqlite3.Connection:
     dir_fd = state_dir_fd(create=True)
     if not managed_exists(dir_fd, "energy.db"):
         _create_empty_owned(dir_fd, "energy.db")
+    # Tighten first and connect second. The reverse order cancels the locks
+    # SQLite has just taken; tighten_db_files() has the whole story. An
+    # existing 0644 database from an install that predates umask 0077 is still
+    # tightened on every start, which is what this call is for -- it has simply
+    # moved to the last moment at which opening these inodes is harmless.
+    _verify_db_files(dir_fd, tighten=True)
     db = sqlite3.connect(DB_PATH, timeout=10.0)
     db.execute("PRAGMA busy_timeout = 10000")
     db.execute("PRAGMA journal_mode = WAL")  # readers never block the writer
@@ -973,7 +1025,7 @@ def connect(read_only: bool = False) -> sqlite3.Connection:
     db.executescript(SCHEMA)
     gate_schema_version(db, read_only=False)
     db.commit()
-    _verify_db_files(dir_fd, tighten=True)
+    _verify_db_files(dir_fd, tighten=False)
     return db
 
 
@@ -1031,7 +1083,9 @@ def run_daemon(args: argparse.Namespace) -> int:
     meta_set(db, "gpu_source", str(gpu.path) if gpu.available else "")
     meta_set(db, "gpu_skipped", gpu.skipped_reason)
     db.commit()
-    tighten_managed_paths()
+    # `db` is open, so the database inodes are off limits here; connect()
+    # already tightened them while nothing was locked.
+    tighten_managed_paths(db_files=False)
 
     rapl.delta_uj()  # prime the counter; the first delta is meaningless
     prev_gpu_w = gpu.watts()
@@ -1509,7 +1563,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # Existing artifacts were created 0755/0644 under umask 0022. Tighten
     # them in place on every start, but only paths we manage and only when
-    # we own them.
+    # we own them. This runs before any command has opened the database,
+    # which is the condition tighten_db_files() requires.
     os.umask(0o077)
     tighten_managed_paths()
     cfg = load_config()

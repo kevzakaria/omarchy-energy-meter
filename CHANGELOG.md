@@ -12,6 +12,49 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
+## Unreleased
+
+**Fixed**
+
+- The daemon no longer cancels its own SQLite locks while tightening file
+  permissions. `omaenergy daemon` crashed with SIGBUS inside a WAL checkpoint
+  during `COMMIT` ([#2](https://github.com/kevzakaria/omarchy-energy-meter/issues/2)),
+  losing about five seconds of measurement before systemd restarted it.
+
+  `tighten_managed_file()` opens a descriptor, checks the mode through it, and
+  closes it — even when the mode already matched. A POSIX advisory lock is
+  released when *any* descriptor for that inode is closed, process-wide, not
+  just the descriptor that took the lock. `connect()` ran that pass over
+  `energy.db`, `energy.db-wal` and `energy.db-shm` *after* opening the
+  database, and `run_daemon()` ran it again once the meta rows were written,
+  so the sampler spent its whole life holding a database it had silently
+  unlocked. Another connection was then free to reset the shared-memory file
+  the daemon still had mapped, and the next checkpoint read a page with no
+  storage behind it.
+
+  The modes are now fixed before the connection is opened and only stat'd
+  afterwards. Nothing is given up: SQLite creates `-wal` and `-shm` with the
+  database file's own mode, so tightening `energy.db` first is what makes the
+  sidecars `0600` whatever umask was inherited. A database left `0644` by an
+  install that predates `umask 0077` is still tightened in place on every
+  start. The post-connect pass still stats every managed file, so a planted
+  symlink or hard link is refused exactly as before — only the open, fchmod
+  and close are skipped, and by then there is nothing left for them to do.
+
+  Reported against the installed `1.2.4` daemon; the same code is present from
+  the commit that introduced the descriptor-relative rewrite.
+
+**Added**
+
+- `scripts/check-sqlite-locks.sh` asserts that the permission pass leaves
+  SQLite's locks alone, and CI runs it. It watches `/proc/locks` across
+  `connect()` and across a checkpointing `COMMIT`, and requires that
+  `connect()` return a connection that actually holds locks — on the shipped
+  tree it did not, which is the shape of the bug in one line. A control case
+  performs the old open/close against a live `-shm` on purpose and fails the
+  run if the locks *survive*, because a lock check that cannot observe a lock
+  must not report a pass.
+
 ## 1.2.4
 
 **Added**
