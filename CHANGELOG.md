@@ -12,7 +12,7 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
-## Unreleased
+## 1.2.4
 
 **Added**
 
