@@ -79,6 +79,15 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   so for the service the write target is confined regardless; the CLI
   invoked from the widget is not sandboxed.
 
+- The panel's "restart the sampler" button built a shell string that named
+  `systemctl` without a path, so the bar's long-lived shell resolved it
+  through whatever `PATH` it had inherited. A writable directory earlier in
+  that `PATH` would decide what the click actually ran. It is now
+  `/usr/bin/systemctl`, which fails rather than falling back to a search if
+  it is ever absent. The CLI itself was already spawned by absolute path
+  (`$HOME/.local/bin/omaenergy`) as an argv array rather than a shell
+  string, so this was the one remaining ambient lookup in the widget.
+
 ## 1.2.3
 
 **Fixed**

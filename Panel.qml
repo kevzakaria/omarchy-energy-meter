@@ -621,8 +621,17 @@ Panel {
   }
 
   function restartSampler() {
+    // Absolute path, not `systemctl`: this string is handed to the bar's
+    // shell, which resolves a bare name through the PATH the long-lived
+    // shell process happens to have inherited. A writable directory earlier
+    // in that PATH is all it takes for someone else's binary to be what a
+    // user's click on "restart the sampler" actually runs. systemd is not
+    // optional on this distribution, so /usr/bin/systemctl is where it is;
+    // if it is ever not, the restart fails instead of falling back to a
+    // search, and the widget's freshness deadline reports a sampler that
+    // stopped producing readings.
     if (root.bar && typeof root.bar.run === "function")
-      root.bar.run("systemctl --user restart omarchy-energy")
+      root.bar.run("/usr/bin/systemctl --user restart omarchy-energy")
     restartRequired = false
   }
   function parseJsonArray(text) {
