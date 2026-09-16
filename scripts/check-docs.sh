@@ -103,4 +103,92 @@ else
   note "Cut from release, and move both in the same commit."
 fi
 
+# --------------------------------------------------------------------------
+# 4. Managed I/O in bin/omaenergy must not go by pathname.
+#
+# The marketplace reviewer's finding was that ensure_private_dir /
+# write_private_file / save_config / _chmod_owned inspected one inode and
+# then operated on a path, so a symlink planted between the two was
+# followed. A future edit that brings Path.read_text on CONFIG_PATH, a
+# predictable .json.tmp, or chmod-by-path back would reintroduce that
+# silently. This audit is the static half of that check.
+#
+# Sysfs Path.read_text() calls (RAPL energy_uj, hwmon power1_*, DMI
+# chassis_type) are deliberately out of scope. Those are world-readable
+# firmware interfaces, not files we create, and the finding was about
+# config.json / energy.db and the directories that hold them.
+# --------------------------------------------------------------------------
+py=bin/omaenergy
+if [ ! -f "$py" ]; then
+  bad "bin/omaenergy is missing"
+else
+  path_ok=1
+  check_offenders() {
+    local needle="$1" blurb="$2" matches
+    matches="$(grep -nF -- "$needle" "$py" || true)"
+    if [ -n "$matches" ]; then
+      bad "$blurb"
+      while IFS= read -r line; do
+        note "$line"
+      done <<EOF
+$matches
+EOF
+      path_ok=0
+    fi
+  }
+  check_offenders 'CONFIG_PATH.read_text' 'bin/omaenergy reads config.json by pathname (CONFIG_PATH.read_text)'
+  check_offenders 'CONFIG_PATH.write_text' 'bin/omaenergy writes config.json by pathname (CONFIG_PATH.write_text)'
+  check_offenders 'DB_PATH.exists(' 'bin/omaenergy follows energy.db via DB_PATH.exists('
+  check_offenders 'with_suffix(".json.tmp")' 'bin/omaenergy uses the predictable config.json.tmp pathname'
+  check_offenders 'os.chmod(' 'bin/omaenergy chmods by pathname (os.chmod)'
+  # write_private_file's bug was O_TRUNC without O_NOFOLLOW, so every open in
+  # this file has to be accounted for. Two line-oriented greps, on purpose: a
+  # clever multiline matcher would be harder to explain when it fails than the
+  # finding it exists to catch.
+  #
+  # First, every os.open must be dir-relative, which is the safe layer's whole
+  # primitive. Two lines are exempt and say so on the line itself: the
+  # BrokenPipeError redirect to os.devnull, which is not a managed path, and
+  # the single open of the XDG *parent* directory, which may legitimately be a
+  # symlink on a user's machine (/home, a linked ~/.config).
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *os.devnull*|*trusted-parent-open*) continue ;;
+    esac
+    case "$line" in
+      *dir_fd=*) ;;
+      *) bad "os.open that is not dir-relative: $line"; path_ok=0; continue ;;
+    esac
+    # Second, a dir-relative open must take its flags from the `flags` local
+    # audited below, or carry O_NOFOLLOW on the call itself.
+    case "$line" in
+      *O_NOFOLLOW*|*flags*) continue ;;
+    esac
+    bad "dir-relative os.open with unaudited flags: $line"
+    path_ok=0
+  done <<EOF
+$(grep -n 'os\.open(' "$py" || true)
+EOF
+  # Every managed open composes its flags into a local named `flags`. That is
+  # the line the missing O_NOFOLLOW would be missing from.
+  flag_lines="$(grep -n '^[[:space:]]*flags [|]\{0,1\}= os\.O_' "$py" || true)"
+  if [ -z "$flag_lines" ]; then
+    bad "bin/omaenergy composes no open flags in a 'flags' local; this audit went blind"
+    path_ok=0
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *O_NOFOLLOW*) continue ;;
+    esac
+    bad "open flags without O_NOFOLLOW: $line"
+    path_ok=0
+  done <<EOF
+$flag_lines
+EOF
+  if [ "$path_ok" -eq 1 ]; then ok "bin/omaenergy has no pathname-based managed I/O"; fi
+fi
+
+
 exit "$fail"

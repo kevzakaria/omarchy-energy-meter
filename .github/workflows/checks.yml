@@ -29,5 +29,11 @@ jobs:
       - name: Documentation matches what is shipped
         run: ./scripts/check-docs.sh
 
+      - name: Managed paths refuse symlinks
+        # Runtime half of the marketplace symlink finding. Isolated XDG
+        # home, no RAPL / GPU / systemd / network; scripts/check-docs.sh
+        # audit 4 is the static half.
+        run: ./scripts/check-path-safety.sh
+
       - name: CLI compiles
         run: python3 -m py_compile bin/omaenergy

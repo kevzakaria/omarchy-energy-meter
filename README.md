@@ -385,8 +385,13 @@ deliberately not used, sample counts, and how many intervals were dropped.
 **Backend**: one source of truth, `~/.config/omarchy-energy/config.json`.
 You never need to hand-edit it. Every key below is editable from the panel's
 gear, and the same keys are settable from the terminal; both go through
-`omaenergy config`, which validates and writes atomically. Out-of-range values
-are rejected rather than clamped (only the daemon clamps intervals at startup):
+`omaenergy config`, which validates and writes atomically. If that path is
+a symlink, not a regular file, not owned by you, has more than one hard
+link, or is larger than 1 MiB, the command prints
+`omaenergy: refusing to use <path>: <reason>` to stderr and exits 1
+rather than writing through it or falling back to defaults. Out-of-range
+values are rejected rather than clamped (only the daemon clamps intervals
+at startup):
 
 ```bash
 omaenergy config                            # list everything, with what needs a restart
@@ -455,6 +460,35 @@ The remaining keys only affect sampling, so they take effect on
 | `~/.local/share/omarchy-energy/energy.db` | SQLite, WAL |
 | `~/.config/omarchy-energy/config.json` | backend config |
 | `/etc/udev/rules.d/99-omarchy-energy-rapl.rules` | the one root-owned file |
+
+State and config directories are created `0700`; `config.json`, `energy.db`,
+and the `-wal`/`-shm` sidecars are `0600`. Pre-existing `0644` artifacts are
+still tightened in place on every start. Opens and writes under those
+directories go through a held directory descriptor with `O_NOFOLLOW`, so a
+symlink planted there is refused rather than followed, and is left alone.
+`O_NOFOLLOW` does not cover hard links — a hard link is not a symlink, so
+the open succeeds — and a managed file is refused unless it has exactly
+one link. Config reads are refused above 1 MiB; the read stream is capped
+as well as the stat, because a writer can append while we read. The cap
+does not apply to `energy.db`, which is not read through that path.
+A mangled or hostile managed path makes commands print
+`omaenergy: refusing to use <path>: <reason>` to stderr and exit 1
+instead of silently falling back to defaults.
+
+SQLite opens the database by pathname (`sqlite3.connect`) and the WAL sidecar
+names are derived from that pathname, so the database file cannot be handed
+to SQLite as a descriptor. The protection there is that the state directory
+is verified owner-only and held open by descriptor, and the database plus
+its sidecars are verified non-symlink, regular, owner-owned, and to have
+exactly one link through that descriptor immediately before and after the
+connect, with a refusal otherwise. That closes the planted-symlink case;
+it does not make SQLite's
+own `open()` atomic against a same-uid attacker already able to write inside
+a 0700 directory we own. The daemon additionally runs under
+`ProtectHome=read-only` with
+`ReadWritePaths=%h/.local/share/omarchy-energy %h/.config/omarchy-energy`,
+so for the service the write target is confined regardless; the CLI invoked
+from the widget is not sandboxed.
 
 Two tables. `samples` is one row per interval of raw measured µJ, pruned after
 `raw_retention_days`, and exists only to draw charts. `daily` is one row per
@@ -573,6 +607,16 @@ does not re-instantiate an already-mounted bar widget. Run
 See [above](#accuracy-and-how-to-calibrate-it-away). Check `measured_share`
 in `omaenergy now --json`: the lower it is, the more of the figure is your
 estimate rather than your hardware.
+
+**`omaenergy: refusing to use <path>: <reason>`**: a managed path (the
+state or config directory, `config.json`, `energy.db`, or a WAL sidecar)
+is a symbolic link, not a regular file, or not owned by you; a managed
+file has more than one hard link (`has N hard links, not 1`); or a
+config read is larger than 1 MiB (`is larger than 1048576 bytes`).
+Commands exit 1 rather than writing through it or falling back to
+defaults, and they leave the planted path alone. A managed path with a
+second name, or an implausibly large config, is not ours; restore a
+real, owner-owned path and retry.
 
 ---
 

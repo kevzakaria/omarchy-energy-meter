@@ -40,6 +40,44 @@ own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   refused instead of misread. Reporting commands refuse but never stamp or
   migrate, which stays with the daemon that owns the file. Existing databases
   read as version 0 and are stamped 1, because that is what they are.
+- State and config paths were created and written by pathname. The write
+  opened with `O_TRUNC` and without `O_NOFOLLOW`, and the config temp file
+  had the predictable name `config.json.tmp`, so a symlink planted inside
+  the managed directory could redirect an automatic config write and
+  truncate another file owned by the same user. Found in the marketplace
+  security review of the v1.2.3 commit. Directories are now walked and
+  held as trusted descriptors, files are opened descriptor-relatively
+  with `O_NOFOLLOW`, temp files are exclusive and unpredictably named, and
+  the rename refuses a destination whose identity changed. The same
+  checks cover `energy.db` and its WAL sidecars. A managed path that is
+  a symlink, not a regular file, not owned by you, a file with more than
+  one hard link, or (for a config read) larger than 1 MiB is refused with
+  `omaenergy: refusing to use <path>: <reason>` on stderr and exit 1,
+  instead of being written through. The planted symlink is left alone.
+  `O_NOFOLLOW` does not cover hard links: a second name for the same
+  inode is not a symlink, so the open succeeds. Measured, not
+  theoretical: a hard link planted at `config.json` took the
+  mode-tightening `fchmod` and silently changed an unrelated file from
+  0644 to 0600. A managed file is now refused unless it has exactly one
+  link. Config reads are refused above 1 MiB: a few hundred bytes of JSON
+  is the real size, and the read stream is capped as well as the stat,
+  because a writer can append while we read. The cap does not apply to
+  `energy.db`, which is not read through that path.
+
+  SQLite opens the database by pathname (`sqlite3.connect`) and the WAL
+  sidecar names are derived from that pathname, so the database file cannot
+  be handed to SQLite as a descriptor. The protection there is that the
+  state directory is verified owner-only and held open by descriptor, and
+  the database plus its sidecars are verified non-symlink, regular,
+  owner-owned, and to have exactly one link through that descriptor
+  immediately before and after the connect, with a refusal otherwise.
+  That closes the planted-symlink case; it does not make SQLite's own
+  `open()` atomic against a same-uid attacker already able to write inside
+  a 0700 directory we own. The daemon
+  additionally runs under `ProtectHome=read-only` with
+  `ReadWritePaths=%h/.local/share/omarchy-energy %h/.config/omarchy-energy`,
+  so for the service the write target is confined regardless; the CLI
+  invoked from the widget is not sandboxed.
 
 ## 1.2.3
 

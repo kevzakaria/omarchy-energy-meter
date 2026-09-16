@@ -141,6 +141,7 @@ From the plugin directory (repo root or the config checkout):
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" *.qml
 python3 -m py_compile bin/omaenergy
+scripts/check-path-safety.sh
 ```
 
 `$OMARCHY_PATH` is `/usr/share/omarchy` on a normal install. `qmllint` must
@@ -181,6 +182,13 @@ would lie.
 - **No new runtime dependencies.** The backend is Python 3 standard library
   only (`sqlite3`, `argparse`, `json`). The widget is Quickshell / QtQuick
   only. A new import is a product decision, not a convenience.
+- **All managed-path I/O goes through the descriptor-relative helpers
+  (`managed_dir_fd`, `read_managed_file`, `write_managed_file`,
+  `managed_stat`, `tighten_managed_file`).** Never `Path.read_text` /
+  `write_text` / `mkdir` / `os.chmod` on a path under the state or config
+  directory: that pathname-based version is what the marketplace review
+  blocked on. Sysfs reads are exempt: they are kernel files under `/sys`,
+  not paths this plugin creates or writes.
 
 ## Reporting a bug usefully
 
