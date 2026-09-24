@@ -12,6 +12,20 @@ stable default branch is the only way to keep unreleased work out of your
 install. `manifest.json`'s `version` is a display string with no effect of its
 own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
+## Unreleased
+
+**Added**
+
+- NVIDIA GPUs are now sampled through NVML when no amdgpu power sensor is
+  present, instead of sitting at a hard 0 W. `auto` still prefers amdgpu when
+  both exist; `gpu_source=nvidia` forces the NVIDIA term. `power.draw` is the
+  same kind of firmware-filtered power estimate as amdgpu's `power1_average`,
+  so it is integrated by the same quadrature at the same `gpu_interval_s`, and
+  selection uses the enforced power limit where amdgpu uses `power1_cap`.
+  Loaded via `ctypes` -- standard library only, no new runtime dependency.
+  Verified on an RTX 5060 desktop (AMD Ryzen 8400F, RAPL package zone
+  `intel-rapl:0`).
+
 ## 1.2.5
 
 **Fixed**

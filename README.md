@@ -207,7 +207,7 @@ This table is the most important thing in this README.
 | Term | Source | Real? |
 |---|---|---|
 | **CPU / SoC** | RAPL `package-*` energy counter. On AMD this is MSR `C001_029B` (the whole socket: core complexes plus the I/O die) | **Measured.** A true accumulating energy counter, so its integral is exact at any sample rate |
-| **GPU** | amdgpu hwmon `power1_average` (label `PPT`) | **Measured, integrated.** Not a counter: a firmware-filtered power estimate in whole watts, integrated by sampling. See [GPU sampling](#gpu-sampling-is-quadrature-not-counting) |
+| **GPU** | amdgpu hwmon `power1_average` (label `PPT`), or NVIDIA `power.draw` via NVML | **Measured, integrated.** Not a counter: a firmware-filtered power estimate, integrated by sampling. See [GPU sampling](#gpu-sampling-is-quadrature-not-counting) |
 | **DRAM, NVMe, SATA, fans, chipset, USB** | `baseline_w` constant | **Estimated.** A typical desktop board exposes no sensor for any of it |
 | **PSU conversion loss** | `psu_efficiency` constant | **Estimated.** Not observable from inside the machine at all |
 
@@ -412,7 +412,7 @@ omaenergy config baseline_w=37.5            # after calibrating
 | `gpu_interval_s` | 1.0 | GPU sub-sample rate: this is what sets GPU accuracy |
 | `raw_retention_days` | 30 | How long per-sample rows are kept for charts. The daily rollup is kept forever |
 | `sanity_max_cpu_w` | 1000 | Package draw above this is treated as a counter reset and dropped |
-| `gpu_source` | `auto` | `auto`, `off`, or an explicit hwmon path |
+| `gpu_source` | `auto` | `auto`, `off`, `nvidia`, or an explicit hwmon path |
 
 `tariff` is the per-kWh price alone, the part of a bill that scales with what
 you use. Where a bill splits into a fixed monthly charge and a per-unit price,
@@ -514,7 +514,8 @@ integrating it into a plausible-looking number.
 | AMD APU (integrated graphics) | CPU term only. The iGPU is already inside the RAPL package figure, and amdgpu's `power1_average` on an APU is documented to include the CPU, so counting it would nearly double the machine. The GPU term is dropped and the reason is reported in `status` |
 | Ryzen 7000/9000 desktop with RDNA2 iGPU | **Unverified.** `cpu_has_integrated_gpu()` treats a CPU as an APU only if `radeon` appears in the `/proc/cpuinfo` `model name`, which those parts do not carry, so the double-count guard does not fire and an iGPU could be added on top of a package figure that already includes it. Workaround: `gpu_source=off` |
 | Multiple AMD GPUs | The card with the highest `power1_cap` is chosen, never the lowest hwmon index: `hwmon10` sorts before `hwmon2`, so index order would happily measure a 15 W iGPU and ignore a 300 W card |
-| NVIDIA / Intel GPU | Not read. The GPU term is recorded as 0 W rather than omitted; `omaenergy status` names the reason under `gpu_skipped` |
+| NVIDIA GPU | **Verified** (RTX 5060, desktop). Read through NVML (`power.draw`, the same class of firmware-filtered read as amdgpu) because NVIDIA exposes nothing usable through sysfs. Used in `auto` when no amdgpu sensor exists; `gpu_source=nvidia` forces it. Requires the driver's `libnvidia-ml.so.1`, which is present wherever `nvidia-smi` is |
+| Intel GPU | Not read. The GPU term is recorded as 0 W rather than omitted; `omaenergy status` names the reason under `gpu_skipped` |
 | Intel `psys` / `dram` zones | **Detected, not used.** `psys` would be strictly better than package-plus-estimate and `dram` would shrink the estimate, but neither could be verified on real hardware here. `omaenergy status` lists them as available and unused |
 | No readable RAPL | The daemon refuses to start rather than record rows with no CPU energy |
 
@@ -596,8 +597,9 @@ in `wheel`. Run `install.sh` again, or check `id` and
 `ls -l /sys/class/powercap/intel-rapl:0/energy_uj` (it should be
 `-r--r----- root wheel`).
 
-**GPU reads 0 W**: expected on NVIDIA, Intel graphics, and AMD APUs.
-`omaenergy status` prints the reason under `gpu_skipped`.
+**GPU reads 0 W**: expected on Intel graphics, on AMD APUs, and on NVIDIA
+machines without `libnvidia-ml.so.1` (no NVIDIA driver). `omaenergy status`
+prints the reason under `gpu_skipped`.
 
 **Widget edits appear to do nothing**: saving a file reloads plugin *code* but
 does not re-instantiate an already-mounted bar widget. Run
@@ -656,7 +658,6 @@ to bring when adding a sensor path.
 Good first contributions:
 
 - `psys` / `dram` support on Intel, with the evidence to back the semantics
-- An NVIDIA GPU term via NVML
 - A smart-plug source: a Shelly/Tasmota/Kasa reading is true wall power at
   under 1% error, and the storage and rollup layers are already source-agnostic
 - Calibrated `baseline_w` figures for real machines, so the defaults improve

@@ -396,7 +396,7 @@ Panel {
     { key: "gpu_interval_s", label: "GPU interval", unit: "s", blurb: "GPU sub-sample spacing; sets GPU accuracy", kind: "number" },
     { key: "raw_retention_days", label: "Raw retention", unit: "days", blurb: "how long per-sample rows are kept", kind: "number" },
     { key: "sanity_max_cpu_w", label: "CPU sanity cap", unit: "W", blurb: "package draw above this is a counter reset", kind: "number" },
-    { key: "gpu_source", label: "GPU source", unit: "", blurb: "auto | off | an explicit hwmon path", kind: "text" }
+    { key: "gpu_source", label: "GPU source", unit: "", blurb: "auto | off | nvidia | an explicit hwmon path", kind: "text" }
   ]
 
 
