@@ -13,7 +13,7 @@ install. `manifest.json`'s `version` publishes nothing by itself: it is what
 the settings pane shows, and what the widget compares the sampler's version
 against. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
-## Unreleased
+## 1.2.7
 
 **Added**
 

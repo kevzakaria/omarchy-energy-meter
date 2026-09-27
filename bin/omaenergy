@@ -92,7 +92,7 @@ from pathlib import Path
 # `omarchy plugin update` moves the manifest and the widget but not this copy,
 # so the widget compares the two to tell a user that install.sh still has to
 # run.
-VERSION = "1.2.6"
+VERSION = "1.2.7"
 
 STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "omarchy-energy"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy-energy"
