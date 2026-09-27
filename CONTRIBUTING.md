@@ -316,6 +316,7 @@ new `main` SHA, and start a fresh `Unreleased` section on `release`.
 Draft them with the script, from the changelog:
 
 ```sh
+git fetch --tags origin                          # the script does not fetch
 scripts/release-notes.sh 1.3.0 main > notes.md   # after the cut is pushed
 $EDITOR notes.md                                  # replace the TODO line
 gh release create v1.3.0 --target main --title v1.3.0 --notes-file notes.md

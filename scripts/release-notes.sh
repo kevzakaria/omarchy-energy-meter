@@ -31,11 +31,30 @@ version="${1#v}"
 target="${2:-release}"
 tag="v$version"
 
-git fetch --quiet --tags origin
-git rev-parse --verify --quiet "origin/$target" >/dev/null \
-  || git rev-parse --verify --quiet "$target^{commit}" >/dev/null \
-  || { echo "release-notes: unknown target '$target'" >&2; exit 1; }
-target_rev="$(git rev-parse --verify --quiet "origin/$target" || git rev-parse "$target^{commit}")"
+# This script does not update the local refs itself. The marketplace's security
+# baseline scans every file in the repository, this one included, and reads
+# a fetch followed by `python3 -` as running code pulled from a remote. So it
+# only asks GitHub, and stops when the local refs are behind.
+stale() { echo "release-notes: $1 Fetch origin with its tags first." >&2; exit 1; }
+
+# A name is read as origin/<name> only when GitHub has a branch by that name.
+# `HEAD` used to resolve to origin/HEAD, which is main, so a draft for an
+# unpushed cut was diffed against the previous release and came out empty.
+remote_rev="$(git ls-remote --quiet origin "refs/heads/$target" | cut -f1)"
+if [ -n "$remote_rev" ]; then
+  target_rev="$(git rev-parse --verify --quiet "origin/$target" || true)"
+  [ "$target_rev" = "$remote_rev" ] || stale "origin/$target is behind GitHub."
+else
+  target_rev="$(git rev-parse --verify --quiet "$target^{commit}")" \
+    || { echo "release-notes: unknown target '$target'" >&2; exit 1; }
+fi
+
+# A tag missing locally would make an older one "previous" without a word.
+while read -r t; do
+  [ -z "$t" ] || git rev-parse --verify --quiet "refs/tags/$t" >/dev/null || stale "tag $t is not here."
+done <<EOF
+$(git ls-remote --quiet --tags --refs origin 'v*' | sed 's|.*refs/tags/||')
+EOF
 
 # The newest tag that is an ancestor of the target and is not this version.
 prev=""
