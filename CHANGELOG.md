@@ -27,14 +27,14 @@ against. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
   button runs the new `update.sh` in a terminal: `omarchy plugin update`
   with its diff and confirmation, then `install.sh`, then a shell restart if
   the plugin changed. The new `updateCheck` widget setting turns the daily
-  check off.
+  check off. (#7)
 
 - The panel also says when the sampler is older than the widget, which is
   what skipping `install.sh` after an update leaves behind, and the same
   button finishes the job. It needs no network, so it stays on with
   `updateCheck` off. `omaenergy now` and `status` report `version` (the CLI)
   and `daemon_version` (the running sampler), and `omaenergy --version`
-  prints it.
+  prints it. (#7)
 
   Installs on 1.2.6 or earlier have to update by hand once, since the code
   that would announce 1.2.7 arrives with it. See the README's Updating
