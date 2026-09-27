@@ -23,7 +23,8 @@
       "barLabelMode": "watts",
       "chartCustomDays": 14,
       "chartHoverLabelColor": "#000000",
-      "chartHoverLabelOpacity": 50
+      "chartHoverLabelOpacity": 50,
+      "updateCheck": true
     },
     "schema": [
       {
@@ -80,6 +81,13 @@
         "max": 100,
         "step": 5,
         "defaultValue": 50
+      },
+      {
+        "key": "updateCheck",
+        "type": "boolean",
+        "label": "Check for updates",
+        "description": "Once a day, ask this plugin's git remote whether a newer version is published (git ls-remote: nothing is downloaded or written), and show an Update button in the panel when one is. The button's notice also appears, whatever this is set to, when the sampler is still running an older version than the widget.",
+        "defaultValue": true
       }
     ]
   }

@@ -25,6 +25,7 @@ git symlinks anywhere in the tree (mode 120000); the validator rejects them.
 | `systemd/omarchy-energy.service` | systemd **user** unit for the sampler loop. |
 | `udev/99-omarchy-energy-rapl.rules` | Read-only `energy_uj` for group `wheel`. |
 | `install.sh` / `uninstall.sh` | Second, explicitly user-run install. Copies files; never symlinks. |
+| `update.sh` | `omarchy plugin update`, then `install.sh`, then a shell restart; `--check` is the widget's read-only daily look at `origin`. Behind the panel's Update button. |
 | `docs/architecture.mmd` `docs/dataflow.mmd` | Component and pipeline diagrams (PNG siblings for the README). |
 | `CHANGELOG.md` | Release history. `Unreleased` accumulates here on `release`; a cut renames that heading. |
 
@@ -292,7 +293,9 @@ Cutting a version, on `release`:
 
 ```sh
 # rename CHANGELOG.md's `Unreleased` heading to the version, bump
-# manifest.json "version", commit
+# manifest.json "version" and VERSION in bin/omaenergy (check-docs fails
+# when they differ: the widget would tell every user to re-run install.sh),
+# commit
 git switch main
 git merge --ff-only release     # keeps main a linear prefix of release
 git tag -a v1.3.0 -m 'v1.3.0'

@@ -115,6 +115,70 @@ Panel {
     return Util.clamp(n, 0, 100) / 100
   }
 
+  // ------------------------------------------------------------- update
+  // Omarchy never tells anyone a third-party plugin has an update, and
+  // `omarchy plugin update` alone leaves the CLI copy in ~/.local/bin (the
+  // daemon and this widget both run it) on the old version. So the widget
+  // says both things itself, and one button runs update.sh, which does the
+  // plugin update (diff shown, confirmation asked), install.sh and the shell
+  // restart in a terminal.
+  readonly property bool updateCheckEnabled: {
+    var v = setting("updateCheck", true)
+    return !(v === false || v === "false")
+  }
+  readonly property string updateScript: Qt.resolvedUrl("update.sh").toString().replace(/^file:\/\//, "")
+  property bool updateAvailable: false
+  property bool updateChecked: false
+  // From the `now` payload. A CLI older than 1.2.7 sends no `version`, and a
+  // daemon started by one records none, so an empty string reads as "older".
+  property bool backendVersionSeen: false
+  property string cliVersion: ""
+  property string daemonVersion: ""
+  readonly property bool backendBehind: {
+    if (manifestVersion === "" || !backendVersionSeen) return false
+    if (cliVersion !== manifestVersion) return true
+    // The daemon's version arrives with a sample, so only judge it then.
+    return nowStatus === "ok" && daemonVersion !== manifestVersion
+  }
+  readonly property bool updateNoticeShown: updateAvailable || backendBehind
+  readonly property string updateNoticeText: {
+    if (updateAvailable)
+      return "A new version of Energy Meter is available."
+    if (backendBehind) {
+      var running = cliVersion !== manifestVersion ? cliVersion : daemonVersion
+      return "The sampler still runs " + (running === "" ? "an older version" : running)
+        + ". Finish the update to run " + manifestVersion + "."
+    }
+    return ""
+  }
+
+  onUpdateCheckEnabledChanged: if (!updateCheckEnabled) updateAvailable = false
+
+  function checkForUpdate() {
+    if (!updateCheckEnabled || updateCheckProc.running) return
+    updateCheckProc.running = true
+  }
+
+  function applyUpdateCheck(text) {
+    var data = parseJsonObject(text)
+    // An error (offline, no `origin` in a development checkout) keeps the last
+    // answer instead of clearing it, so a flaky network cannot make the
+    // notice come and go.
+    if (data && data.status === "ok") updateAvailable = data.update === true
+  }
+
+  function runUpdate() {
+    if (!root.bar || typeof root.bar.run !== "function") return
+    var launcher = (Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy")
+      + "/bin/omarchy-launch-floating-terminal-with-presentation"
+    // Run through bash rather than relying on the file's executable bit, and
+    // quote twice: bar.run's `bash -lc` removes one layer, and the launcher
+    // splices what is left into its own `bash -c` string.
+    var inner = "/usr/bin/bash " + Util.shellQuote(root.updateScript)
+    root.bar.run(Util.shellQuote(launcher) + " " + Util.shellQuote(inner))
+    root.close()
+  }
+
   // ---------------------------------------------------------------- now
 
   property string nowStatus: ""
@@ -479,12 +543,17 @@ Panel {
   }
 
   readonly property string tooltipText: {
-    if (!hasSample)
-      return "Energy meter unavailable"
-    var t = "Today " + formatKwh(todayKwh) + " \u00b7 " + formatCost(todayCost)
-      + "\nMonth " + formatKwh(monthKwh) + " \u00b7 " + formatCost(monthCost)
-    if (hasUptime)
-      t += "\nUptime " + formatKwh(uptimeKwh) + (uptimeTruncated ? " (partial)" : "")
+    var t
+    if (!hasSample) {
+      t = "Energy meter unavailable"
+    } else {
+      t = "Today " + formatKwh(todayKwh) + " \u00b7 " + formatCost(todayCost)
+        + "\nMonth " + formatKwh(monthKwh) + " \u00b7 " + formatCost(monthCost)
+      if (hasUptime)
+        t += "\nUptime " + formatKwh(uptimeKwh) + (uptimeTruncated ? " (partial)" : "")
+    }
+    if (updateNoticeShown)
+      t += "\nUpdate available: open the panel"
     return t
   }
 
@@ -908,6 +977,10 @@ Panel {
       return
     }
     nowStatus = String(data.status || "error")
+    backendVersionSeen = true
+    cliVersion = data.version !== undefined && data.version !== null ? String(data.version) : ""
+    daemonVersion = data.daemon_version !== undefined && data.daemon_version !== null
+      ? String(data.daemon_version) : ""
     // A parseable payload is a live backend, whatever it has to report. The
     // deadline is armed here rather than on the reply's own `status` so a
     // backend that is up but has nothing yet ("no_data") is still recognised
@@ -1043,6 +1116,30 @@ Panel {
     onTriggered: root.configSavedShown = false
   }
 
+  // The first check waits a minute and a half, so it does not compete with a
+  // whole desktop starting and does not fail on a network still coming up;
+  // after that, once a day. Changing `interval` restarts a running Timer,
+  // which is what moves it onto the daily cadence after the first run.
+  Timer {
+    interval: root.updateChecked ? 86400000 : 90000
+    running: root.updateCheckEnabled
+    repeat: true
+    onTriggered: root.checkForUpdate()
+  }
+
+  Process {
+    id: updateCheckProc
+    command: ["/usr/bin/bash", root.updateScript, "--check"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyUpdateCheck(text)
+    }
+    // Set on exit rather than on a parsed answer, so a script that cannot run
+    // at all still moves the check onto the daily cadence instead of retrying
+    // every 90 s.
+    onExited: root.updateChecked = true
+  }
+
   Process {
     id: nowProc
     command: [root.cli, "now", "--json"]
@@ -1158,6 +1255,20 @@ Panel {
     onPressed: function(b) {
       if (b === Qt.RightButton) root.cycleBarLabel()
       else root.toggle()
+    }
+
+    // The one place an update shows without opening anything: nobody reads
+    // a panel they have no reason to open.
+    Rectangle {
+      visible: root.updateNoticeShown
+      width: Style.space(5)
+      height: width
+      radius: width / 2
+      color: root.accent
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.topMargin: Style.space(3)
+      anchors.rightMargin: Style.space(2)
     }
 
     Column {
@@ -1352,6 +1463,55 @@ Panel {
                 onEntered: if (root.bar) root.bar.showTooltip(gearHit, "Settings")
                 onExited: if (root.bar) root.bar.hideTooltip(gearHit)
                 onClicked: root.toggleConfig()
+              }
+            }
+          }
+
+          // ---------- Update notice ----------
+          // Above both the readings and the settings pane, since an update is
+          // the one thing here that needs the user to act.
+          BorderSurface {
+            id: updateNotice
+            visible: root.updateNoticeShown
+            width: parent.width
+            height: updateNotice.contentTopInset + updateNotice.contentBottomInset + updateNoticeRow.implicitHeight
+            color: Color.background
+            borderSpec: Border.flat(root.accent, Style.normalBorderWidth)
+            padding: Style.space(8)
+            radius: Style.cornerRadius
+
+            Row {
+              id: updateNoticeRow
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.leftMargin: updateNotice.contentLeftInset
+              anchors.rightMargin: updateNotice.contentRightInset
+              anchors.topMargin: updateNotice.contentTopInset
+              spacing: Style.space(8)
+
+              Text {
+                textFormat: Text.PlainText
+                width: updateNoticeRow.width - updateButton.width - updateNoticeRow.spacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.updateNoticeText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                id: updateButton
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Update"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                verticalPadding: Style.space(2)
+                horizontalPadding: Style.space(10)
+                onClicked: root.runUpdate()
               }
             }
           }

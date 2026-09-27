@@ -57,6 +57,7 @@ and the two agree closely from then on.
 
 - [Why this exists](#why-this-exists)
 - [Install](#install)
+- [Updating](#updating)
 - [What you get](#what-you-get)
 - [What is measured and what is estimated](#what-is-measured-and-what-is-estimated)
 - [How the numbers are calculated](#how-the-numbers-are-calculated)
@@ -142,6 +143,38 @@ Data starts accumulating at install time. RAPL counters are volatile and carry
 no history, so **there is no way to recover consumption from before the daemon
 first ran**. The sooner it is running, the sooner the monthly view means
 something.
+
+---
+
+## Updating
+
+Omarchy does not update third-party plugins on its own, and does not tell you
+when one has an update. From 1.2.7 the widget does: once a day it asks this
+repository whether a newer version is published, and when one is, the bar
+icon gets a dot and the panel shows a notice with an **Update** button.
+
+The button opens a terminal and runs `update.sh`, which does the three steps
+an update takes:
+
+```bash
+omarchy plugin update io.github.kevzakaria.energy-meter   # shows the diff, asks first
+~/.config/omarchy/plugins/io.github.kevzakaria.energy-meter/install.sh
+omarchy restart shell                                      # only if the plugin changed
+```
+
+Run those yourself if you prefer, and on 1.2.6 or earlier you have to, once:
+the notice arrives with 1.2.7, so it cannot announce itself. The middle step
+is the one that is easy to miss. `omarchy plugin update` moves the plugin's
+files, but the daemon and the widget run the copy of the CLI that `install.sh`
+put in `~/.local/bin`, and only `install.sh` replaces it. If that step is
+skipped, the panel says so, because it compares its own version with the one
+the sampler reports.
+
+The daily check is `git ls-remote` against the plugin's `origin`: it asks for
+the commit that `main` points at, and downloads and writes nothing, so what
+GitHub learns is that a request came from your address. Turn it off with the
+**Check for updates** widget setting. The notice about a sampler left behind
+does not use the network and stays on either way.
 
 ---
 
@@ -397,6 +430,7 @@ deliberately not used, sample counts, and how many intervals were dropped.
 | `chartCustomDays` | 14 | Days the graph and the breakdown span when the Custom filter is selected. 1-365 |
 | `chartHoverLabelColor` | `#000000` | Hex colour of the background behind the graph's hover readout (`#RGB`, `#RRGGBB`, or `#AARRGGBB`) |
 | `chartHoverLabelOpacity` | 50 | How opaque that background is, 0-100. 0 is invisible, 100 is solid |
+| `updateCheck` | `true` | Once a day, ask the plugin's git remote whether a newer version is published. See [Updating](#updating) |
 
 The hover readout sits on top of the trace, and on a busy graph the text
 and the line compete, so the readout gets a background you can tune to

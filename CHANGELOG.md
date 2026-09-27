@@ -9,8 +9,36 @@ That split is forced rather than chosen. `omarchy plugin add` clones the
 repository's default branch and `omarchy plugin update` fast-forwards to it, and
 neither can be pointed at a tag, so a GitHub Release publishes nothing, and a
 stable default branch is the only way to keep unreleased work out of your
-install. `manifest.json`'s `version` is a display string with no effect of its
-own. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+install. `manifest.json`'s `version` publishes nothing by itself: it is what
+the settings pane shows, and what the widget compares the sampler's version
+against. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
+
+## Unreleased
+
+**Added**
+
+- The widget now says when there is an update, and updates in one step.
+  Omarchy neither updates third-party plugins nor says when one has an
+  update, and `omarchy plugin update` leaves the CLI in `~/.local/bin`, which
+  the daemon and the widget run, on the old version until `install.sh` runs
+  again. Once a day the widget asks the plugin's git remote for its newest
+  commit (`git ls-remote`: nothing is downloaded or written); when it is
+  ahead, the bar icon gets a dot and the panel an **Update** button. The
+  button runs the new `update.sh` in a terminal: `omarchy plugin update`
+  with its diff and confirmation, then `install.sh`, then a shell restart if
+  the plugin changed. The new `updateCheck` widget setting turns the daily
+  check off.
+
+- The panel also says when the sampler is older than the widget, which is
+  what skipping `install.sh` after an update leaves behind, and the same
+  button finishes the job. It needs no network, so it stays on with
+  `updateCheck` off. `omaenergy now` and `status` report `version` (the CLI)
+  and `daemon_version` (the running sampler), and `omaenergy --version`
+  prints it.
+
+  Installs on 1.2.6 or earlier have to update by hand once, since the code
+  that would announce 1.2.7 arrives with it. See the README's Updating
+  section.
 
 ## 1.2.6
 

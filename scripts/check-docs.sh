@@ -103,6 +103,21 @@ else
   note "Cut from release, and move both in the same commit."
 fi
 
+# The CLI carries its own copy of the version, because it runs from
+# ~/.local/bin, away from the manifest. The widget compares the two to tell a
+# user install.sh still has to run, so a cut that bumps only one of them would
+# tell every user their sampler is out of date.
+cli_version=""
+[ -f bin/omaenergy ] && cli_version="$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' bin/omaenergy | head -1)"
+if [ -z "$cli_version" ]; then
+  bad "cannot find VERSION in bin/omaenergy"
+elif [ "$cli_version" = "$manifest_version" ]; then
+  ok "bin/omaenergy VERSION $cli_version matches manifest.json"
+else
+  bad "bin/omaenergy says VERSION $cli_version, manifest.json says ${manifest_version:-<none>}"
+  note "A cut bumps both, in the same commit."
+fi
+
 # --------------------------------------------------------------------------
 # 4. Managed I/O in bin/omaenergy must not go by pathname.
 #

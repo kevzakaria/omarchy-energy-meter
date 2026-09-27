@@ -85,6 +85,15 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+# The shipped version, the same string as manifest.json's `version`
+# (scripts/check-docs.sh fails the build when they differ). It lives here
+# rather than being read from the manifest because this file runs as a copy
+# in ~/.local/bin, away from the plugin checkout. That distance is the point:
+# `omarchy plugin update` moves the manifest and the widget but not this copy,
+# so the widget compares the two to tell a user that install.sh still has to
+# run.
+VERSION = "1.2.6"
+
 STATE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "omarchy-energy"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy-energy"
 DB_PATH = STATE_DIR / "energy.db"
@@ -1305,6 +1314,10 @@ def run_daemon(args: argparse.Namespace) -> int:
     # Mirrored from PRAGMA user_version, which is authoritative; this row is
     # kept so `meta` stays self-describing for anyone reading the file by hand.
     meta_set(db, "schema_version", SCHEMA_VERSION)
+    # The version of the code actually sampling, which is not necessarily the
+    # CLI on disk: install.sh restarts the service when it replaces the copy,
+    # but anything else that replaces it leaves the old daemon running.
+    meta_set(db, "version", VERSION)
     meta_set(db, "interval_s", interval)          # the EFFECTIVE interval, so
     meta_set(db, "gpu_interval_s", gpu_interval)  # readers judge staleness
     meta_set(db, "daemon_started_ms", int(time.time() * 1000))
@@ -1502,6 +1515,7 @@ def no_data(cfg: dict, status: str = "no_data") -> dict:
     # let a consumer render absence of measurement as a measurement of zero.
     return {
         "status": status,
+        "version": VERSION,
         "currency": cfg["currency"],
         "tariff": float(cfg["tariff"]),
         "baseline_w": float(cfg["baseline_w"]),
@@ -1558,6 +1572,11 @@ def cmd_now(args: argparse.Namespace, cfg: dict) -> dict:
     measured_dc = cpu_dc + gpu_dc
     return {
         "status": status,
+        # This CLI, and the daemon that wrote the newest sample. The widget
+        # compares both against its own manifest; `daemon_version` is null for
+        # a daemon older than the field, which is itself the answer.
+        "version": VERSION,
+        "daemon_version": meta_get(db, "version"),
         "watts": round(total_socket_w(cpu_dc, gpu_dc, cfg), 1),
         "cpu_w": round(socket_w(cpu_dc, cfg), 1),
         "gpu_w": round(socket_w(gpu_dc, cfg), 1),
@@ -1833,6 +1852,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="omaenergy",
         description="Energy consumption of this machine, per day / week / month / year.")
+    parser.add_argument("--version", action="version", version=f"omaenergy {VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_daemon = sub.add_parser("daemon", help="run the sampler (systemd user service)")
@@ -1900,6 +1920,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         data = {
+            "version": VERSION,
             **describe_sources(cfg),
             "db": str(DB_PATH),
             "config": str(CONFIG_PATH),
@@ -1918,6 +1939,7 @@ def main(argv: list[str] | None = None) -> int:
             data["tracking_since"] = db.execute("SELECT MIN(day) FROM daily").fetchone()[0]
             data["dropped_intervals"] = int(meta_get(db, "dropped_intervals", "0") or 0)
             data["daemon_interval_s"] = meta_get(db, "interval_s")
+            data["daemon_version"] = meta_get(db, "version")
         print(json.dumps(data, indent=2) if args.json else render_status(data))
         return 0
 
