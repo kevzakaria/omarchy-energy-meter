@@ -77,9 +77,12 @@ import ctypes
 import errno
 import json
 import os
+import re
 import secrets
+import shutil
 import stat
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -817,8 +820,49 @@ class RaplSensor:
         self._prev = None
 
 
+# `nvidia-smi -q -d POWER` does not read an instantaneous register: the driver
+# keeps a rolling sample window (119 samples over ~2.4 s on the machine this
+# was developed against) and the command returns that window's statistics, so
+# the call itself is cheap -- ~20 ms wall, ~16 ms CPU measured here -- while
+# its answer is a 2.4 s average. NV_POWER_TTL sits just above that window so
+# successive reads tile the timeline rather than resample the same window, and
+# so the daemon's 1 Hz `watts()` does not fork a process every second: in a
+# tool whose job is measuring load, those processes would be part of the load.
+NV_SMI_TIMEOUT = 10.0
+NV_POWER_TTL = 2.5
+NV_POWER_MAX_FAILS = 3
+_RE_NV_POWER_AVG = re.compile(
+    r"Power Samples\b[\s\S]{0,400}?\bAvg\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*W")
+
+
+def nvidia_smi_power_w(tool: str) -> float | None:
+    """Average GPU power in watts from nvidia-smi's power sample block.
+
+    Returns None when the block is absent or unparseable, so a caller can
+    tell "no reading" from "0 W": this plugin records 0 W only for a GPU it
+    has actually measured at 0 W.
+    """
+    try:
+        proc = subprocess.run([tool, "-q", "-d", "POWER"],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL,
+                              text=True, timeout=NV_SMI_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _RE_NV_POWER_AVG.search(proc.stdout or "")
+    if match is None:
+        return None
+    try:
+        watts = float(match.group(1))
+    except ValueError:
+        return None
+    # A card cannot draw a negative or absurd figure; refuse to integrate one.
+    return watts if 0.0 <= watts <= 10000.0 else None
+
+
 class GpuSensor:
-    """Amdgpu hwmon or NVIDIA NVML power reading, chosen deterministically.
+    """Amdgpu hwmon, NVIDIA NVML, or NVIDIA nvidia-smi power reading, chosen
+    deterministically.
 
     AMD selection is by the highest `power1_cap`, never by hwmon index: hwmonN
     numbering follows driver probe order, it changes between boots, and it sorts
@@ -827,12 +871,15 @@ class GpuSensor:
     and silently ignore a 300 W card. The NVML backend mirrors that rule across
     NVIDIA cards, taking the one with the highest enforced power limit.
 
-    `gpu_source` is "auto" (amdgpu first, then NVML), "off", "nvidia" (NVML
-    only), or an explicit amdgpu hwmon path.
+    `gpu_source` is "auto" (amdgpu first, then NVML, then nvidia-smi), "off",
+    "nvidia" (NVML, then nvidia-smi), or an explicit amdgpu hwmon path. The
+    third backend exists for parts whose NVML power query is unimplemented;
+    it is only ever reached after NVML has refused every card, so a machine
+    whose NVML works keeps the cheaper backend. See `_open_nvidia_smi`.
     """
 
     def __init__(self, cfg: dict) -> None:
-        self.kind = ""                 # "amdgpu" | "nvidia"
+        self.kind = ""                 # "amdgpu" | "nvidia" | "nvidia-smi"
         self.path: Path | None = None  # amdgpu sysfs file
         self.descriptor = ""
         self.label = ""
@@ -843,6 +890,10 @@ class GpuSensor:
         self._nvml_handle = 0
         self._nvml_detail = ""
         self._nvml_pending = False
+        self._smi = ""                 # nvidia-smi path, resolved at probe
+        self._smi_w = 0.0
+        self._smi_at = 0.0
+        self._smi_fails = 0
         self._dead = False
         # Whether re-probing this same config could still turn up a GPU term.
         # The rule is one sentence: only a driver that is installed but not yet
@@ -876,6 +927,19 @@ class GpuSensor:
 
         # mode == "nvidia", or "auto" with no usable amdgpu sensor: use NVML.
         if self._open_nvidia():
+            return
+
+        # NVML refused every card. On some parts that refusal is permanent
+        # rather than transient: an AD107 (GeForce RTX 4060) answers
+        # NVML_ERROR_NOT_SUPPORTED (rc=3) to `nvmlDeviceGetPowerUsage` and
+        # prints N/A for every `power.draw*` field, at idle and at 100%
+        # utilisation, on both the open and the proprietary modules -- the
+        # card has no sensor behind that particular query. The same driver
+        # does still publish real averaged power through the sampling path
+        # that `nvidia-smi -q -d POWER` prints as "Power Samples" (measured
+        # here: 53 W idle, 57 W on NVENC, 115 W against a 115 W limit under a
+        # torch matmul). Prefer a measured GPU term over none.
+        if self._open_nvidia_smi():
             return
 
         # NVML was the last input that could have changed the answer, so whether
@@ -1066,6 +1130,66 @@ class GpuSensor:
         self.cap_w = chosen["cap_w"]
         return True
 
+    def _open_nvidia_smi(self) -> bool:
+        """Power from nvidia-smi's sample block, for parts whose NVML power
+        query is unimplemented.
+
+        Only ever called after NVML has refused every card, so a machine whose
+        NVML works keeps the backend that never spawns a process. `nvidia-smi`
+        is not a dependency this plugin adds: it ships with the driver that
+        would have to be installed for there to be anything to read, and the
+        invocation is the read-only query form, never a setting.
+        """
+        tool = shutil.which("nvidia-smi")
+        if tool is None:
+            # No driver, or none with a user-visible tool: no amount of
+            # waiting installs one. NVML's reason for skipping stands.
+            return False
+        watts = nvidia_smi_power_w(tool)
+        if watts is None:
+            # The card is present but publishes no sample block either, so
+            # this is not a GPU term. Leave NVML's `gpu_skipped` reason.
+            return False
+        name, cap_w = self._nvidia_smi_identity(tool)
+        self.kind = "nvidia-smi"
+        self._smi = tool
+        self._smi_w = watts
+        self._smi_at = time.monotonic()
+        self._smi_fails = 0
+        self.descriptor = "nvidia-smi:0"
+        self.label = name
+        self.cap_w = cap_w
+        return True
+
+    @staticmethod
+    def _nvidia_smi_identity(tool: str) -> tuple[str, float]:
+        """Card name and enforced power limit, for the log line and `status`.
+
+        The limit is the same figure the NVML backend selects a card by, so a
+        machine with several cards picks the same one whichever backend ends
+        up reading it.
+        """
+        try:
+            proc = subprocess.run(
+                [tool, "--query-gpu=name,enforced.power.limit",
+                 "--format=csv,noheader,nounits"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=NV_SMI_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return "", 0.0
+        lines = (proc.stdout or "").strip().splitlines()
+        if not lines:
+            return "", 0.0
+        parts = [field.strip() for field in lines[0].split(",")]
+        name = parts[0] if parts else ""
+        cap_w = 0.0
+        if len(parts) > 1:
+            try:
+                cap_w = round(float(parts[1]), 1)
+            except ValueError:
+                cap_w = 0.0   # e.g. the literal "N/A" of an unsupported field
+        return name, cap_w
+
     def close(self) -> None:
         """Release the NVML session, if this sensor opened one.
 
@@ -1073,6 +1197,13 @@ class GpuSensor:
         shutdown leaves the driver initialised for the rest of the process'
         life. The daemon re-probes, so that is not hypothetical: without this,
         each retry would add a session rather than replace one."""
+        if self.kind == "nvidia-smi":
+            # No session to release, but a closed sensor must stop reporting a
+            # source: `available` is what `status` and the daemon's re-probe
+            # branch both read.
+            self._smi = ""
+            self._dead = True
+            return
         if self._nvml is None:
             return
         try:
@@ -1132,12 +1263,41 @@ class GpuSensor:
                 self.retryable = True
                 return 0.0
             return mw.value / 1000.0
+        if self.kind == "nvidia-smi":
+            return self._nvidia_smi_watts()
         if self.path is None:
             return 0.0
         try:
             return int(self.path.read_text()) / 1e6
         except (OSError, ValueError):
             return 0.0
+
+    def _nvidia_smi_watts(self) -> float:
+        """Cached nvidia-smi reading, re-read only once the cache is stale.
+
+        A failed read keeps the last good value instead of reporting 0 W: a
+        subprocess that timed out is not evidence that the GPU went idle, and
+        0 W is a number this plugin is only allowed to print when it was
+        measured. Three consecutive failures is evidence, and marks the source
+        dead so the daemon re-probes and `status` stops naming a source it can
+        no longer read.
+        """
+        if not self._smi:
+            return 0.0
+        now = time.monotonic()
+        if now - self._smi_at >= NV_POWER_TTL:
+            watts = nvidia_smi_power_w(self._smi)
+            if watts is None:
+                self._smi_fails += 1
+                if self._smi_fails >= NV_POWER_MAX_FAILS:
+                    self._dead = True
+                    self.retryable = True
+                    return 0.0
+                return self._smi_w
+            self._smi_fails = 0
+            self._smi_w = watts
+            self._smi_at = now
+        return self._smi_w
 
 
 def describe_sources(cfg: dict) -> dict:

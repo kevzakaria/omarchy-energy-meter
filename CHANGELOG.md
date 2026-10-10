@@ -13,6 +13,30 @@ install. `manifest.json`'s `version` publishes nothing by itself: it is what
 the settings pane shows, and what the widget compares the sampler's version
 against. See [CONTRIBUTING → Release](CONTRIBUTING.md#release--marketplace).
 
+## Unreleased
+
+**Added**
+
+- NVIDIA cards whose NVML power query is unimplemented now get a GPU term
+  instead of none. An AD107 (GeForce RTX 4060) answers
+  `NVML_ERROR_NOT_SUPPORTED`, and prints `N/A` for every `power.draw*` field,
+  at idle and under load, on both the open and the proprietary modules: there
+  is no sensor behind that query on the part, so the term was 0 W and the
+  hours that actually cost something were not counted at all. After NVML has
+  refused every card, the sampler reads the driver's own sample window through
+  `nvidia-smi -q -d POWER`, which is the same averaged figure the NVML backend
+  would have returned. What moves: the GPU term goes from 0 W to 114.9 W
+  averaged under a torch matmul, against that card's 115 W enforced limit, and
+  an NVENC encode adds about 4 W to it. What does not: the low end of the same
+  figure is a floor rather than a reading -- 52.9 W while the card sat in P8
+  with the memory clock parked, unchanged with every GPU client closed -- so
+  on such a card the idle hours are now counted as more than they cost, where
+  before they were counted as zero. Both ends are labeled in the README's
+  hardware table, deltas stay meaningful at every load, and `gpu_source: off`
+  remains the way out. It costs one `nvidia-smi` process every 2.5 s, and only
+  on machines where NVML has already failed.
+  (#9)
+
 ## 1.2.7
 
 **Added**
